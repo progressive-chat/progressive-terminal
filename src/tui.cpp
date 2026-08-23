@@ -1,6 +1,6 @@
 #include "tui.hpp"
 #include "http.hpp"
-#include "json.hpp"
+#include "proto.hpp"
 #include "render.hpp"
 #include <iostream>
 #include <string>
@@ -46,10 +46,8 @@ int run_tui(const std::string& host,
         if (line == ":q" || line == ":quit" || line == "/quit") break;
         if (line.empty()) continue;
 
-        const std::string body = "{"
-            "\"session\":" + json::str(session) +
-            ",\"input\":" + json::str(line) + "}";
-        http_post_json(host + "/api/ttys/input", body, bearer);
+        http_post_json(host + "/api/ttys/input",
+                       proto::inputBody(session, line), bearer);
     }
     return 0;
 }

@@ -1,4 +1,5 @@
 #include "render.hpp"
+#include "proto.hpp"
 #include "http.hpp"
 #include "json.hpp"
 #include <iostream>
@@ -52,16 +53,8 @@ std::string request_frame(const std::string& host,
         sz = detect_terminal_size();
     }
 
-    std::string body = "{";
-    body += "\"session\":" + json::str(session);
-    body += ",\"term\":{\"cols\":" + std::to_string(sz.cols) +
-            ",\"rows\":" + std::to_string(sz.rows) + "}";
-    if (!room.empty())
-        body += ",\"room\":" + json::str(room);
-    if (static_only)
-        body += ",\"view\":\"static\"";
-    body += "}";
-
+    const std::string body = proto::renderBody(session, sz.cols, sz.rows,
+                                               room, static_only);
     const std::string url = host + "/api/ttys/render";
     HttpResult r = http_post_json(url, body, bearer);
     if (!r.ok()) {
@@ -76,19 +69,6 @@ std::string request_frame(const std::string& host,
     if (!json::get_string(r.body, "frame", frame))
         return "error: no 'frame' in response";
     return frame;
-}
-
-void usage_render() {
-    std::cerr <<
-        "Usage: progressive-terminal render [--account <name>] "
-        "[options]\n"
-        "  --account <name> account to render (defaults to the active one)\n"
-        "  --host <url>     progressive-cli serve --ttys endpoint "
-        "(or $PROGTERM_HOST)\n"
-        "  --room <id>      optional room to focus\n"
-        "  --static         request a single non-interactive ASCII snapshot\n"
-        "  --cols <n>       force width (default: detect terminal)\n"
-        "  --rows <n>       force height (default: detect terminal)\n";
 }
 
 }  // namespace pt

@@ -1,5 +1,6 @@
 #include "http.hpp"
 #include "json.hpp"
+#include "proto.hpp"
 #include "render.hpp"
 #include "store.hpp"
 #include "discover.hpp"
@@ -78,83 +79,31 @@ pt::store::Profile resolve_profile(const Args& a) {
     return p;
 }
 
-void print_json_field(const pt::HttpResult& r, const std::string& field) {
-    std::string v;
-    if (pt::json::get_string(r.body, field, v)) std::cout << v << "\n";
-}
-
-void usage_render() {
-    std::cerr <<
-        "Usage: progressive-terminal render [--profile <name>] [options]\n"
-        "  --profile <name> profile to render (defaults to the active one)\n"
-        "  --host <url>      progressive-cli serve --ttys endpoint "
-        "(or $PROGTERM_HOST)\n"
-        "  --room <id>       optional room to focus\n"
-        "  --static          request a single non-interactive ASCII snapshot\n"
-        "  --cols <n>        force width (default: detect terminal)\n"
-        "  --rows <n>        force height (default: detect terminal)\n";
-}
-
-void usage_register() {
-    std::cerr << "Usage: progressive-terminal register [--profile <n>] "
-                 "--homeserver <url> --username <u> --password <p> "
-                 "[--reg-token <t>] [--proxy <spec>] [--relay-token <t>]\n"
-                 "  --profile <n>  store the account in this profile (default: active)\n"
-                 "  --proxy <spec> socks5://[u:p@]h:p | http://h:p | off "
-                 "(per-profile proxy; overrides server default)\n";
-}
-
-void usage_session() {
-    std::cerr << "Usage: progressive-terminal session [--profile <n>] "
-                 "--homeserver <url> --user <@id> --token <t> "
-                 "--device <d> [--proxy <spec>] [--relay-token <t>]\n"
-                 "  --profile <n>  store the account in this profile\n"
-                 "  --proxy <spec> per-profile proxy (socks5/http/off)\n";
-}
-
-void usage_proxy() {
-    std::cerr << "Usage: progressive-terminal proxy <on|off|status> [args]\n"
-                 "  proxy on  <preset>   enable a server-side proxy preset "
-                 "(e.g. tor, i2p)\n"
-                 "  proxy off            disable the server-side proxy\n"
-                 "  proxy status         show local profile proxy + relay status\n"
-                 "  Auth: --relay-token <t> or $PROGTERM_TOKEN when the relay "
-                 "runs with --token\n";
-}
-
-void usage_profile() {
-    std::cerr << "Usage: progressive-terminal profile <action> [name] [flags]\n"
-                 "  profile create <name> [--proxy <spec>]   new profile (no account needed)\n"
-                 "  profile set <name> --proxy <spec>        set proxy on a profile\n"
-                 "  profile enable <name> | disable <name>  toggle (>=1 stays enabled)\n"
-                 "  profile current <name>                   make <name> the active profile\n"
-                 "  profile delete <name>                    remove (refuses last enabled)\n"
-                 "  profile list                            show all profiles\n";
-}
-
-int cmd_register(Args& a) {
-    if (a.opt.count("help") || a.opt.count("h")) { usage_register(); return 0; }
+// The whole register/session tail in one place: resolve the target profile,
+// POST the body, echo credential fields, store+activate a returned session.
+int post_auth(Args& a, const std::string& host, const char* path,
+              const std::string& body,
+              std::initializer_list<const char*> fields) {
+    // Target profile; created enabled when missing so register works on a
+    // fresh install.
     std::string pname = get(a, "profile");
     if (pname.empty()) { pt::store::ensure_default_profile(); pname = pt::store::current_name(); }
     pt::store::Profile p;
     if (!pt::store::load_profile(pname, p)) { p.name = pname; p.enabled = true; }
-    const std::string host = host_from(a);
-    const std::string body = "{"
-        "\"homeserver\":" + pt::json::str(a.opt["homeserver"]) +
-        ",\"username\":"   + pt::json::str(a.opt["username"]) +
-        ",\"password\":"   + pt::json::str(a.opt["password"]) +
-        ",\"reg_token\":"  + pt::json::str(a.opt["reg-token"]) +
-        ",\"proxy\":"      + pt::json::str(get(a, "proxy")) + "}";
-    pt::HttpResult r = pt::http_post_json(host + "/api/ttys/register", body,
-                                          bearer_from(a));
+
+    pt::HttpResult r = pt::http_post_json(host + path, body, bearer_from(a));
     if (!r.ok()) {
         std::string err;
-        if (pt::json::get_string(r.body, "error", err)) std::cerr << "error: " << err << "\n";
-        else std::cerr << "error: HTTP " << r.http_status << "\n";
+        if (pt::json::get_string(r.body, "error", err))
+            std::cerr << "error: " << err << "\n";
+        else
+            std::cerr << "error: HTTP " << r.http_status << "\n";
         return 1;
     }
-    for (const char* f : {"session", "user_id", "access_token", "device_id"})
-        print_json_field(r, f);
+    for (const char* f : fields) {
+        std::string v;
+        if (pt::json::get_string(r.body, f, v)) std::cout << v << "\n";
+    }
     std::string sid;
     if (pt::json::get_string(r.body, "session", sid) && !sid.empty()) {
         p.session = sid; p.host = host; p.proxy = get(a, "proxy");
@@ -162,101 +111,77 @@ int cmd_register(Args& a) {
         pt::store::set_current(p.name);
     }
     return 0;
+}
+
+// Resolve the profile for session-carrying commands; fails when it has none.
+bool need_session(const Args& a, pt::store::Profile& p) {
+    p = resolve_profile(a);
+    if (!p.session.empty()) return true;
+    std::cerr << "error: no session (register into a profile first)\n";
+    return false;
+}
+
+// ---- per-command help ---------------------------------------------------
+
+// ---- commands ------------------------------------------------------------
+
+int cmd_register(Args& a) {
+    const std::string host = host_from(a);
+    return post_auth(a, host, "/api/ttys/register",
+        pt::proto::registerBody(get(a, "homeserver"), get(a, "username"),
+                                get(a, "password"), get(a, "reg-token"),
+                                get(a, "proxy")),
+        {"session", "user_id", "access_token", "device_id"});
 }
 
 int cmd_session(Args& a) {
-    if (a.opt.count("help") || a.opt.count("h")) { usage_session(); return 0; }
-    std::string pname = get(a, "profile");
-    if (pname.empty()) { pt::store::ensure_default_profile(); pname = pt::store::current_name(); }
-    pt::store::Profile p;
-    if (!pt::store::load_profile(pname, p)) { p.name = pname; p.enabled = true; }
     const std::string host = host_from(a);
-    const std::string body = "{"
-        "\"account\":{"
-            "\"homeserver\":" + pt::json::str(a.opt["homeserver"]) +
-            ",\"user_id\":"    + pt::json::str(a.opt["user"]) +
-            ",\"access_token\":" + pt::json::str(a.opt["token"]) +
-            ",\"device_id\":"  + pt::json::str(a.opt["device"]) +
-            ",\"proxy\":"      + pt::json::str(get(a, "proxy")) +
-        "}}";
-    pt::HttpResult r = pt::http_post_json(host + "/api/ttys/session", body,
-                                          bearer_from(a));
-    if (!r.ok()) {
-        std::string err;
-        if (pt::json::get_string(r.body, "error", err)) std::cerr << "error: " << err << "\n";
-        else std::cerr << "error: HTTP " << r.http_status << "\n";
-        return 1;
-    }
-    for (const char* f : {"session", "key"}) print_json_field(r, f);
-    std::string sid;
-    if (pt::json::get_string(r.body, "session", sid) && !sid.empty()) {
-        p.session = sid; p.host = host; p.proxy = get(a, "proxy");
-        pt::store::save_profile(p);
-        pt::store::set_current(p.name);
-    }
-    return 0;
+    return post_auth(a, host, "/api/ttys/session",
+        pt::proto::sessionBody(get(a, "homeserver"), get(a, "user"),
+                               get(a, "token"), get(a, "device"),
+                               get(a, "proxy")),
+        {"session", "key"});
 }
 
 int cmd_input(Args& a) {
-    if (a.opt.count("help") || a.opt.count("h")) {
-        std::cerr << "Usage: progressive-terminal input [--profile <name>] "
-                     "--text <line>\n";
-        return 0;
-    }
-    const pt::store::Profile p = resolve_profile(a);
-    if (p.session.empty()) { std::cerr << "error: no session (register into a profile first)\n"; return 1; }
-    const std::string body = "{"
-        "\"session\":" + pt::json::str(p.session) +
-        ",\"input\":"   + pt::json::str(a.opt["text"]) + "}";
-    pt::http_post_json(p.host + "/api/ttys/input", body, bearer_from(a));
+    pt::store::Profile p;
+    if (!need_session(a, p)) return 1;
+    pt::http_post_json(p.host + "/api/ttys/input",
+                       pt::proto::inputBody(p.session, a.opt["text"]),
+                       bearer_from(a));
     return 0;
 }
 
 int cmd_sync(Args& a) {
-    if (a.opt.count("help") || a.opt.count("h")) {
-        std::cerr << "Usage: progressive-terminal sync [--profile <name>]\n";
-        return 0;
-    }
-    const pt::store::Profile p = resolve_profile(a);
-    if (p.session.empty()) { std::cerr << "error: no session (register into a profile first)\n"; return 1; }
-    const std::string body = "{\"session\":" + pt::json::str(p.session) + "}";
-    pt::HttpResult r = pt::http_post_json(p.host + "/api/ttys/sync", body,
+    pt::store::Profile p;
+    if (!need_session(a, p)) return 1;
+    pt::HttpResult r = pt::http_post_json(p.host + "/api/ttys/sync",
+                                          pt::proto::syncBody(p.session),
                                           bearer_from(a));
     std::cout << r.body << "\n";
     return 0;
 }
 
 int cmd_render(Args& a) {
-    if (a.opt.count("help") || a.opt.count("h")) { usage_render(); return 0; }
-    const pt::store::Profile p = resolve_profile(a);
-    if (p.session.empty()) { std::cerr << "error: no session (register into a profile first)\n"; return 1; }
-    const bool static_only = a.opt.count("static") > 0;
-    const int cols = a.opt.count("cols") ? std::stoi(get(a, "cols")) : 0;
-    const int rows = a.opt.count("rows") ? std::stoi(get(a, "rows")) : 0;
-
+    pt::store::Profile p;
+    if (!need_session(a, p)) return 1;
 #ifdef PROGTERM_TUI
-    if (a.opt.count("tui")) {
+    if (a.opt.count("tui"))
         return pt::run_tui(p.host, p.session, get(a, "room"), bearer_from(a));
-    }
 #endif
-
-    const std::string frame = pt::request_frame(p.host, p.session,
-                                                get(a, "room"), static_only,
-                                                cols, rows, bearer_from(a));
+    const std::string frame = pt::request_frame(
+        p.host, p.session, get(a, "room"), a.opt.count("static") > 0,
+        a.opt.count("cols") ? std::stoi(get(a, "cols")) : 0,
+        a.opt.count("rows") ? std::stoi(get(a, "rows")) : 0,
+        bearer_from(a));
     if (frame.rfind("error:", 0) == 0) { std::cerr << frame << "\n"; return 1; }
     std::cout << frame;
     return 0;
 }
 
-int cmd_use(Args& a) {
-    if (a.opt.count("help") || a.opt.count("h")) {
-        std::cerr << "Usage: progressive-terminal use <name>\n"
-                     "  Make <name> the active profile (must be enabled).\n";
-        return 0;
-    }
-    std::string name = get(a, "profile");
-    if (name.empty() && !a.pos.empty()) name = a.pos.front();
-    if (name.empty()) { std::cerr << "error: usage: use <name>\n"; return 1; }
+// Make <name> the active profile (must exist and be enabled). Shared by
+// `use` and `profile current`.
+int switch_current(const std::string& name) {
     if (!pt::store::set_current(name)) {
         std::cerr << "error: unknown or disabled profile '" << name << "'\n";
         return 1;
@@ -265,41 +190,49 @@ int cmd_use(Args& a) {
     return 0;
 }
 
-int cmd_accounts(Args& a) {
-    // alias for `profile list`
+int cmd_use(Args& a) {
+    std::string name = get(a, "profile");
+    if (name.empty() && !a.pos.empty()) name = a.pos.front();
+    if (name.empty()) { std::cerr << "error: usage: use <name>\n"; return 1; }
+    return switch_current(name);
+}
+
+void print_profiles() {
     std::cout << "profiles:\n";
     const std::string cur = pt::store::current_name();
-    for (const auto& p : pt::store::list_profiles()) {
+    for (const auto& p : pt::store::list_profiles())
         std::cout << (p.name == cur ? "* " : "  ") << p.name
                   << (p.enabled ? "  [enabled]" : "  [disabled]")
                   << "  proxy=" << (p.proxy.empty() ? "(server default)" : p.proxy)
                   << "  session=" << (p.session.empty() ? "(none)" : p.session)
                   << "\n";
-    }
-    return 0;
+}
+
+// Positional profile name for `profile <action> <name>`; errors when absent.
+bool need_name(const Args& a, std::string& name) {
+    name = a.pos.size() > 1 ? a.pos[1] : get(a, "name");
+    if (!name.empty()) return true;
+    std::cerr << "error: profile name required\n";
+    return false;
 }
 
 int cmd_profile(Args& a) {
-    if (a.opt.count("help") || a.opt.count("h")) { usage_profile(); return 0; }
     std::string sub = a.pos.empty() ? "" : a.pos[0];
-    if (sub == "list" || sub.empty()) return cmd_accounts(a);
+    if (sub == "list" || sub.empty()) { print_profiles(); return 0; }
 
+    std::string name;
     if (sub == "create" || sub == "set") {
-        std::string name = a.pos.size() > 1 ? a.pos[1] : get(a, "name");
-        if (name.empty()) { std::cerr << "error: profile name required\n"; return 1; }
+        if (!need_name(a, name)) return 1;
         pt::store::Profile p;
         if (!pt::store::load_profile(name, p)) { p.name = name; p.enabled = true; }
-        if (sub == "set" && a.opt.count("proxy")) p.proxy = get(a, "proxy");
-        if (sub == "create" && a.opt.count("proxy")) p.proxy = get(a, "proxy");
-        if (sub == "create") p.enabled = true;
+        if (a.opt.count("proxy")) p.proxy = get(a, "proxy");
         pt::store::save_profile(p);
         std::cout << "profile " << name << " saved (proxy="
                   << (p.proxy.empty() ? "server default" : p.proxy) << ")\n";
         return 0;
     }
     if (sub == "enable" || sub == "disable") {
-        std::string name = a.pos.size() > 1 ? a.pos[1] : get(a, "name");
-        if (name.empty()) { std::cerr << "error: profile name required\n"; return 1; }
+        if (!need_name(a, name)) return 1;
         const bool on = (sub == "enable");
         if (!pt::store::set_enabled(name, on)) {
             std::cerr << "error: cannot " << sub << " '" << name
@@ -310,18 +243,11 @@ int cmd_profile(Args& a) {
         return 0;
     }
     if (sub == "current") {
-        std::string name = a.pos.size() > 1 ? a.pos[1] : get(a, "name");
-        if (name.empty()) { std::cerr << "error: profile name required\n"; return 1; }
-        if (!pt::store::set_current(name)) {
-            std::cerr << "error: unknown or disabled profile '" << name << "'\n";
-            return 1;
-        }
-        std::cout << "active profile: " << name << "\n";
-        return 0;
+        if (!need_name(a, name)) return 1;
+        return switch_current(name);
     }
     if (sub == "delete" || sub == "rm") {
-        std::string name = a.pos.size() > 1 ? a.pos[1] : get(a, "name");
-        if (name.empty()) { std::cerr << "error: profile name required\n"; return 1; }
+        if (!need_name(a, name)) return 1;
         if (!pt::store::remove_profile(name)) {
             std::cerr << "error: cannot delete '" << name
                       << "' (last enabled profile)\n";
@@ -330,16 +256,11 @@ int cmd_profile(Args& a) {
         std::cout << "profile " << name << " removed\n";
         return 0;
     }
-    usage_profile();
+    std::cerr << "error: unknown profile action (see: profile --help)\n";
     return 1;
 }
 
 int cmd_logout(Args& a) {
-    if (a.opt.count("help") || a.opt.count("h")) {
-        std::cerr << "Usage: progressive-terminal logout [--profile <name>]\n"
-                     "  Forget the account in a profile (keeps the profile/proxy).\n";
-        return 0;
-    }
     std::string pname = get(a, "profile");
     if (pname.empty()) pname = pt::store::current_name();
     pt::store::Profile p;
@@ -354,29 +275,24 @@ int cmd_logout(Args& a) {
 }
 
 int cmd_proxy(Args& a) {
-    if (a.opt.count("help") || a.opt.count("h")) { usage_proxy(); return 0; }
     std::string sub = a.pos.empty() ? "" : a.pos[0];
     const std::string host = host_from(a);
 
-    if (sub == "on") {
+    if (sub == "on" || sub == "off") {
         std::string preset = a.pos.size() > 1 ? a.pos[1] : get(a, "preset");
-        if (preset.empty()) { std::cerr << "error: usage: proxy on <preset>\n"; return 1; }
+        if (sub == "on" && preset.empty()) {
+            std::cerr << "error: usage: proxy on <preset>\n";
+            return 1;
+        }
         pt::HttpResult r = pt::http_post_json(
             host + "/api/ttys/proxy",
-            "{\"action\":\"on\",\"preset\":" + pt::json::str(preset) + "}",
+            sub == "on" ? pt::proto::proxyOnBody(preset) : pt::proto::proxyOffBody(),
             bearer_from(a));
         std::cout << r.body << "\n";
         return 0;
     }
-    if (sub == "off") {
-        pt::HttpResult r = pt::http_post_json(
-            host + "/api/ttys/proxy", "{\"action\":\"off\"}", bearer_from(a));
-        std::cout << r.body << "\n";
-        return 0;
-    }
     if (sub == "status") {
-        pt::store::Profile p;
-        pt::store::load_profile("", p);
+        pt::store::Profile p = resolve_profile(a);
         std::cout << "local profile : " << (p.name.empty() ? "(none)" : p.name)
                   << "  proxy=" << (p.proxy.empty() ? "(server default)" : p.proxy) << "\n";
         pt::HttpResult r = pt::http_get_json(host + "/api/ttys/proxy",
@@ -388,66 +304,64 @@ int cmd_proxy(Args& a) {
         else std::cout << "relay proxy   : (relay does not expose proxy status)\n";
         return 0;
     }
-    usage_proxy();
+    std::cerr << "error: usage: proxy <on|off|status> [args]\n";
     return 1;
 }
+
+// ---- dispatch table (drives both routing and the global help) ------------
+
+struct Command {
+    const char* name;
+    const char* brief;   // one-liner: shown in the global help and used as
+                         // the fallback -h text when `detail` is null
+    int (*run)(Args&);
+    void (*detail)();    // extended help; may be null
+};
+
+const Command kCommands[] = {
+    {"render",  "[--profile <n>] [--static] [--room <id>] [--cols/--rows <n>] [--tui]", cmd_render,   nullptr},
+    {"register","--homeserver <url> --username <u> --password <p> [--reg-token <t>] [--proxy <spec>]",  cmd_register, nullptr},
+    {"session", "--homeserver <url> --user <@id> --token <t> --device <d> [--proxy <spec>]",            cmd_session,  nullptr},
+    {"input",   "send one input line to the session (--text <line>)",         cmd_input,    nullptr},
+    {"sync",    "poll the relay's sync state",                                cmd_sync,     nullptr},
+    {"use",     "switch the active profile (--profile <name> or positional)", cmd_use,      nullptr},
+    {"profile", "create|set <name> [--proxy <spec>] | enable|disable | current | delete | list",     cmd_profile,  nullptr},
+    {"proxy",   "on <preset> | off | status   (relay-side proxy presets)",          cmd_proxy,    nullptr},
+    {"logout",  "forget the account in a profile (keeps profile/proxy)",      cmd_logout,   nullptr},
+};
 
 void usage() {
     std::cerr <<
         "progressive-terminal — lightweight curl-wrapper for progressive-chat (cli)\n\n"
-        "Usage: progressive-terminal <command> [--profile <name>] [options]\n\n"
-        "Commands:\n"
-        "  render     request the ASCII UI (detect terminal size, send, print)\n"
-        "  register   POST /api/ttys/register -> saves into a profile\n"
-        "  session    POST /api/ttys/session  -> saves into a profile\n"
-        "  input      POST /api/ttys/input    (send one line to a session)\n"
-        "  sync       POST /api/ttys/sync      (poll sync state)\n"
-        "  use <name> switch the active profile\n"
-        "  accounts   list profiles (alias for 'profile list')\n"
-        "  profile    manage profiles (create/set/enable/disable/current/delete)\n"
-        "  proxy      manage the relay proxy (on <preset> | off | status)\n"
-        "  logout     forget the account in a profile (keeps profile/proxy)\n\n"
-        "Global / per-command:\n"
-        "  --host <url>     server endpoint (or $PROGTERM_HOST / cached host)\n"
-        "  --no-scan        don't auto-scan nearby ports for the relay\n"
-        "  --scan-base <p>  base port for scan (default 29325)\n"
-        "  --scan-range <n> scan base±n ports (default 10)\n"
-        "  --profile <name> pick a profile (register/session/render/input/sync);\n"
-        "                   default=active\n"
-        "  --proxy <spec>   per-profile proxy: socks5://[u:p@]h:p | http://h:p | off\n"
-        "  --relay-token <t> relay auth token (or $PROGTERM_TOKEN), sent as\n"
-        "                   'Authorization: Bearer' — matches serve --ttys --token\n"
-        "  -h, --help       this help\n\n"
-        "Profiles: each profile is a container with optional account + proxy. A\n"
-        "  profile may exist with no account. At least one profile is always\n"
-        "  enabled. Auto-connect scans 127.0.0.1 ports around --scan-base when no\n"
-        "  host is given. This is the ONLY local state (no message DB).\n";
+        "Usage: progressive-terminal <command> [options]\n\nCommands:\n";
+    for (const auto& c : kCommands)
+        std::cerr << "  " << c.name << "  " << c.brief << "\n";
+    std::cerr <<
+        "\nGlobal flags:\n"
+        "  --host <url> | $PROGTERM_HOST | --profile <name> | --proxy <spec> |\n"
+        "  --relay-token <t> ($PROGTERM_TOKEN) | --no-scan | --scan-base/-range\n"
+        "  Full reference and examples: README.md.\n";
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 2 || std::string(argv[1]) == "help" ||
-        (argc > 1 && std::string(argv[1]) == "-h")) {
-        usage();
-        return argc < 2 ? 1 : 0;
-    }
-
-    const std::string cmd = argv[1];
+    if (argc < 2) { usage(); return 1; }
+    const std::string arg1 = argv[1];
+    if (arg1 == "help" || arg1 == "-h") { usage(); return 0; }
     Args a = parse(argc, argv);
 
-    if (cmd == "render")   return cmd_render(a);
-    if (cmd == "register") return cmd_register(a);
-    if (cmd == "session")  return cmd_session(a);
-    if (cmd == "input")    return cmd_input(a);
-    if (cmd == "sync")     return cmd_sync(a);
-    if (cmd == "use")      return cmd_use(a);
-    if (cmd == "accounts") return cmd_accounts(a);
-    if (cmd == "profile")  return cmd_profile(a);
-    if (cmd == "proxy")    return cmd_proxy(a);
-    if (cmd == "logout")   return cmd_logout(a);
+    for (const auto& c : kCommands) {
+        if (arg1 != c.name) continue;
+        if (a.opt.count("help") || a.opt.count("h")) {
+            if (c.detail) c.detail();
+            else std::cerr << c.name << " — " << c.brief << "\n";
+            return 0;
+        }
+        return c.run(a);
+    }
 
-    std::cerr << "unknown command: " << cmd << "\n";
+    std::cerr << "unknown command: " << arg1 << "\n";
     usage();
     return 1;
 }

@@ -80,11 +80,6 @@ std::string unescape(std::string_view s) {
 
 }  // namespace
 
-static std::string_view ltrim(std::string_view v) {
-    while (!v.empty() && std::isspace(static_cast<unsigned char>(v[0]))) v.remove_prefix(1);
-    return v;
-}
-
 bool get_string(std::string_view body, std::string_view key, std::string& out) {
     std::string needle = "\"";
     needle.append(key.begin(), key.end());

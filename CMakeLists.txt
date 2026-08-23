@@ -20,6 +20,7 @@ add_executable(progressive-terminal
     src/main.cpp
     src/http.cpp
     src/json.cpp
+    src/proto.cpp
     src/render.cpp
     src/store.cpp
     src/discover.cpp

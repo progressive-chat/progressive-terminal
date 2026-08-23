@@ -51,7 +51,7 @@ profile may exist with **no account** (just proxy/host config), and **at least
 one profile is always enabled**:
 
 ```
-~/.config/progressive-terminal/profiles/<name>   # {enabled, proxy, host, session}
+~/.config/progressive-terminal/profiles/<name>   # key=value: enabled/proxy/host/session
 ~/.config/progressive-terminal/current          # active profile name (must be enabled)
 ```
 
