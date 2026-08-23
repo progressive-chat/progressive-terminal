@@ -11,13 +11,13 @@ endif()
 
 find_package(CURL REQUIRED)
 
-add_executable(progterm
+add_executable(progterm-lite
     src/main.cpp
     src/http.cpp
     src/discover.cpp
 )
 
-target_include_directories(progterm PRIVATE src)
-target_link_libraries(progterm PRIVATE CURL::libcurl)
+target_include_directories(progterm-lite PRIVATE src)
+target_link_libraries(progterm-lite PRIVATE CURL::libcurl)
 
-install(TARGETS progterm RUNTIME DESTINATION bin)
+install(TARGETS progterm-lite RUNTIME DESTINATION bin)

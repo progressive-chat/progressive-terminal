@@ -1,4 +1,4 @@
-# progressive-terminal (dumb)
+# progressive-terminal (lite)
 
 A **zero-option pipe** to a `progressive-cli serve --ttys` relay.
 One request per invocation: the path is forwarded verbatim, the body is
@@ -6,15 +6,18 @@ sent exactly as typed, the response goes to stdout untouched. The client
 stores nothing anywhere.
 
 ```
-progterm <path> [json-body]     # POST when a body is given, GET otherwise
-progterm render <session> [room]   # static frame, auto-sized to your tty
-progterm term <session> [room]     # remote-terminal loop (plain-text screen)
+progterm register <homeserver> <user> <password>  # create + remember session
+progterm last                                     # re-sync remembered id
+progterm render [session] [room]                  # static frame, auto-sized
+progterm term [session] [room]                    # remote-terminal loop
+progterm sync [session] | proxy [on <preset>|off]
+progterm <path> [json-body]                       # raw pipe (everything else)
 ```
 
-**Verbs caught locally** (before the wire — no hand-written JSON needed):
-`help` · `last` (latest session id) · `sync <session>` ·
-`proxy [on <preset>|off]` · plus the two above. Everything else is a
-verbatim pipe.
+`<session>` arguments are OPTIONAL: the client remembers the latest one in
+`~/.config/progterm-lite/session` (override: `$PROGTERM_SESSION`,
+`$PROGTERM_SESSION_FILE`). `register` and `last` refresh that memory
+automatically.
 
 **Offline store-and-forward:** set `PROGTERM_OUTBOX=<file>` and any POST
 that cannot reach the relay is spooled there, then auto-delivered on the

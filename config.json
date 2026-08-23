@@ -1,4 +1,5 @@
 {
+  "proxy_active": "",
   "proxy_presets": [
     {
       "host": "127.0.0.1",

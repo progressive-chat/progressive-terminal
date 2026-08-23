@@ -19,6 +19,10 @@
 #include <iostream>
 #include <string>
 #include <cstdlib>
+
+#ifdef __unix__
+#include <sys/stat.h>
+#endif
 #include <fstream>
 #include <vector>
 
@@ -78,6 +82,45 @@ bool outbox_record(const std::string& path, const std::string& body) {
     return true;
 }
 
+// ---- lite: remember exactly ONE session id ------------------------------
+// File lives next to nothing else; PROGTERM_SESSION overrides it entirely.
+std::string session_file() {
+    const char* e = std::getenv("PROGTERM_SESSION_FILE");
+    if (e) return e;
+    std::string d = getenv("HOME") ? getenv("HOME") : ".";
+    mkdir((d + "/.config").c_str(), 0700);
+    mkdir((d + "/.config/progterm-lite").c_str(), 0700);
+    return d + "/.config/progterm-lite/session";
+}
+std::string saved_session() {
+    if (const char* e = std::getenv("PROGTERM_SESSION")) return e;
+    std::ifstream f(session_file());
+    std::string s;
+    return std::getline(f, s) ? s : std::string();
+}
+void remember_session(const std::string& id) {
+    std::ofstream f(session_file(), std::ios::trunc);
+    f << id;
+}
+// Pull "session":"…" out of a relay response without a JSON parser.
+std::string sess_of(const std::string& body) {
+    const std::string k = "\"session\":\"";
+    size_t p = body.find(k);
+    if (p == std::string::npos) return "";
+    p += k.size();
+    size_t e = body.find('"', p);
+    return e == std::string::npos ? "" : body.substr(p, e - p);
+}
+// Resolve the session for a verb: explicit argument wins, else remembered.
+std::string need_session(int argc, char** argv) {
+    if (argc >= 3 && *argv[2]) return argv[2];
+    const std::string s = saved_session();
+    if (!s.empty()) return s;
+    std::cerr << "no session yet — run: progterm register <homeserver> "
+                 "<user> <password>   (or pass <session>)\n";
+    return "";
+}
+
 // Terminal size: TIOCGWINSZ when attached to a tty, then COLUMNS/LINES,
 // then 80x24. The one piece of LOCAL data a dumb pipe still must supply.
 void term_size(int& cols, int& rows) {
@@ -110,23 +153,16 @@ std::string jesc(const std::string& s) {
     return o;
 }
 
+std::string render_body(const std::string& session, const std::string& room);
+
 // progterm term <session> [room] — the remote-terminal loop: every stdin
 // line is delivered to the full client's REPL, then the refreshed screen
 // comes back as plain text and is printed verbatim.
-int term_loop(const std::string& host, const std::string& bearer, int argc,
-              char** argv) {
-    const std::string session = argv[2];
-    const std::string room = argc >= 4 ? argv[3] : "";
+int term_loop(const std::string& host, const std::string& bearer,
+              const std::string& session, const std::string& room) {
     const std::string in_url = host + "/api/ttys/input";
     const std::string rd_url = host + "/api/ttys/render";
-    auto frame_body = [&] {
-        int c, r; term_size(c, r);   // re-detected every frame: resizes live
-        return "{\"session\":\"" + jesc(session) + "\""
-               ",\"term\":{\"cols\":" + std::to_string(c) +
-               ",\"rows\":" + std::to_string(r) + "}" +
-               (room.empty() ? "" : ",\"room\":\"" + jesc(room) + "\"") +
-               ",\"view\":\"static\"}";
-    };
+    auto frame_body = [&] { return render_body(session, room); };
 
     pt::http_post_plain(rd_url, frame_body(), bearer);  // first paint
     std::cout << "term> " << std::flush;
@@ -149,13 +185,13 @@ int term_loop(const std::string& host, const std::string& bearer, int argc,
 
 // progterm render <session> [room] — one static ASCII frame, sized to the
 // local terminal. A positional verb, not an option: no flags exist here.
-std::string render_body(int argc, char** argv) {
+std::string render_body(const std::string& session, const std::string& room) {
     int c, r;
     term_size(c, r);
-    std::string b = "{\"session\":\"" + std::string(argv[2]) + "\"" +
+    std::string b = "{\"session\":\"" + jesc(session) + "\"" +
                     ",\"term\":{\"cols\":" + std::to_string(c) +
                     ",\"rows\":" + std::to_string(r) + "}";
-    if (argc >= 4) b += ",\"room\":\"" + std::string(argv[3]) + "\"";
+    if (!room.empty()) b += ",\"room\":\"" + jesc(room) + "\"";
     return b + ",\"view\":\"static\"}";
 }
 
@@ -166,15 +202,42 @@ std::string render_body(int argc, char** argv) {
 int cmd_last(const std::string& host, const std::string& bearer) {
     const pt::HttpResult r =
         pt::http_get_json(host + "/api/ttys/session/last", bearer);
-    std::cout << r.body << "\n";
-    return r.http_status == 200 ? 0 : 1;
+    if (r.http_status != 200) { std::cout << r.body << "\n"; return 1; }
+    const std::string sid = sess_of(r.body);
+    if (!sid.empty()) remember_session(sid);   // auto-remember on bootstrap
+    std::cout << sid << "\n";
+    return 0;
+}
+
+// progterm register <homeserver> <user> <password> — create an account,
+// remember the returned session id, print it. No JSON from the user.
+int cmd_register(const std::string& host, const std::string& bearer,
+                 int argc, char** argv) {
+    if (argc < 5) {
+        std::cerr << "usage: progterm register <homeserver> <user> <password>"
+                  << "\n";
+        return 1;
+    }
+    const std::string body =
+        "{\"homeserver\":\"" + jesc(argv[2]) +
+        "\",\"username\":\"" + jesc(argv[3]) +
+        "\",\"password\":\"" + jesc(argv[4]) +
+        "\",\"reg_token\":\"\",\"proxy\":\"\"}";
+    const pt::HttpResult r =
+        pt::http_post_json(host + "/api/ttys/register", body, bearer);
+    if (r.http_status != 200) { std::cout << r.body << "\n"; return 1; }
+    const std::string sid = sess_of(r.body);
+    if (sid.empty()) { std::cerr << "no session in response\n"; return 1; }
+    remember_session(sid);
+    std::cout << sid << "\n";
+    return 0;
 }
 
 int cmd_sync(const std::string& host, const std::string& bearer, int argc,
              char** argv) {
-    if (argc < 3) { std::cerr << "usage: progterm sync <session>\n"; return 1; }
-    const std::string body =
-        "{\"session\":\"" + jesc(argv[2]) + "\"}";
+    const std::string ses = need_session(argc, argv);
+    if (ses.empty()) return 1;
+    const std::string body = "{\"session\":\"" + jesc(ses) + "\"}";
     const pt::HttpResult r = pt::http_post_plain(
         host + "/api/ttys/sync", body, bearer);
     std::cout << r.body << "\n";
@@ -223,14 +286,22 @@ int main(int argc, char** argv) {
     const std::string bearer = bearer_from();
     outbox_flush(host, bearer);          // deliver anything spooled earlier
 
+    if (path == "register") return cmd_register(host, bearer, argc, argv);
     if (path == "last")  return cmd_last(host, bearer);
     if (path == "sync")  return cmd_sync(host, bearer, argc, argv);
     if (path == "proxy") return cmd_proxy(host, bearer, argc, argv);
+    if (path == "term") {
+        const std::string ses = need_session(argc, argv);
+        if (ses.empty()) return 1;
+        return term_loop(host, bearer, ses, argc >= 4 ? argv[3] : "");
+    }
 
     std::string body;
     if (path == "render") {
-        if (argc < 3) { usage(); return 1; }
-        body = render_body(argc, argv);            // sized locally
+        const std::string ses = need_session(argc, argv);
+        if (ses.empty()) return 1;
+        const std::string room_opt = argc >= 4 ? argv[3] : "";
+        body = render_body(ses, room_opt);         // sized locally
         path = "api/ttys/render";
     } else if (path != "term" && argc >= 3) {
         body = argv[2];                            // verbatim pipe
@@ -252,7 +323,5 @@ int main(int argc, char** argv) {
         return (r.http_status >= 200 && r.http_status < 300) ? 0 : 1;
     }
 
-    // ---- remote-terminal loop ----
-    if (argc < 3) { usage(); return 1; }
-    return term_loop(host, bearer, argc, argv);
+    return 0;
 }
