@@ -2,7 +2,6 @@
 #include "http.hpp"
 #include "json.hpp"
 #include "render.hpp"
-#include "term_size.hpp"
 #include <iostream>
 #include <string>
 #include <csignal>

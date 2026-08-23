@@ -1,6 +1,5 @@
 #pragma once
 #include <string>
-#include "term_size.hpp"
 
 namespace pt {
 

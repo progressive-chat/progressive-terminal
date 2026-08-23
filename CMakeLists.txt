@@ -18,7 +18,6 @@ find_package(CURL REQUIRED)
 
 add_executable(progressive-terminal
     src/main.cpp
-    src/term_size.cpp
     src/http.cpp
     src/json.cpp
     src/render.cpp
