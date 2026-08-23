@@ -77,18 +77,18 @@ int term_loop(const std::string& host, const std::string& bearer, int argc,
               char** argv) {
     const std::string session = argv[2];
     const std::string room = argc >= 4 ? argv[3] : "";
-    int c = 0, r = 0;
-    term_size(c, r);
-    const std::string rbody =
-        "{\"session\":\"" + jesc(session) + "\""
-        ",\"term\":{\"cols\":" + std::to_string(c) +
-        ",\"rows\":" + std::to_string(r) + "}" +
-        (room.empty() ? "" : ",\"room\":\"" + jesc(room) + "\"") +
-        ",\"view\":\"static\"}";
     const std::string in_url = host + "/api/ttys/input";
     const std::string rd_url = host + "/api/ttys/render";
+    auto frame_body = [&] {
+        int c, r; term_size(c, r);   // re-detected every frame: resizes live
+        return "{\"session\":\"" + jesc(session) + "\""
+               ",\"term\":{\"cols\":" + std::to_string(c) +
+               ",\"rows\":" + std::to_string(r) + "}" +
+               (room.empty() ? "" : ",\"room\":\"" + jesc(room) + "\"") +
+               ",\"view\":\"static\"}";
+    };
 
-    pt::http_post_plain(rd_url, rbody, bearer);  // first paint
+    pt::http_post_plain(rd_url, frame_body(), bearer);  // first paint
     std::cout << "term> " << std::flush;
     std::string line;
     while (std::getline(std::cin, line)) {
@@ -97,7 +97,7 @@ int term_loop(const std::string& host, const std::string& bearer, int argc,
             pt::http_post_json(in_url,
                 "{\"session\":\"" + jesc(session) +
                 "\",\"input\":\"" + jesc(line) + "\"}", bearer);
-        const pt::HttpResult fr = pt::http_post_plain(rd_url, rbody, bearer);
+        const pt::HttpResult fr = pt::http_post_plain(rd_url, frame_body(), bearer);
         if (fr.http_status == 200)
             std::cout << "\x1b[2J\x1b[H" << fr.body << "term> " << std::flush;
         else
