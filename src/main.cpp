@@ -439,67 +439,100 @@ int cmd_proxy(const std::string& host, const std::string& bearer, int argc,
 }
 
 void usage() {
-    std::cerr << "usage: progterm <path> [json-body]\n"
-                 "env:   PROGTERM_HOST  PROGTERM_TOKEN\n"
-                 "verbs caught locally: help | last | sync <session> |\n"
-              << "  proxy [on <preset>|off] | render <session> [room] | term <session> [room]\n"
-              << "example: progterm proxy on tor\n"
-              << "         progterm render <session> [room]   # static frame, "
-              "auto-sized\n"
-              << "         progterm term <session> [room]     # remote-terminal loop\n";
+    std::cerr << "progterm-lite — special proxy to the full client\n\n"
+              << "verbs: register <hs> <user> <pass> [profile] | last |\n"
+              << "  sync|render|term|logout [session|profile] [room] |\n"
+              << "  proxy [on <preset>|off] | profile create|set|list|enable|\n"
+              << "  disable|current|delete|export|import <file> | raw <path> [body]\n"
+              << "anything else = a LINE for the full client's REPL:\n"
+              << "  progterm-lite hello          # chat text\n"
+              << "  progterm-lite /open #general # its own command\n";
 }
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    if (argc < 2) { usage(); return 1; }
-    std::string path = argv[1];
+// progterm raw <path> [json-body] — explicit verbatim HTTP escape hatch
+// (for scripting against endpoints that have no verb yet).
+int cmd_raw(const std::string& host, const std::string& bearer, int argc,
+            char** argv) {
+    if (argc < 3) { std::cerr << "usage: progterm raw <path> [json-body]\n"; return 1; }
+    std::string path = argv[2];
     if (!path.empty() && path[0] == '/') path.erase(0, 1);
-    if (path == "help") { usage(); return 0; }
+    const std::string body = argc >= 4 ? argv[3] : "";
+    const pt::HttpResult r = body.empty()
+        ? pt::http_get_json(host + "/" + path, bearer)
+        : pt::http_post_json(host + "/" + path, body, bearer);
+    if (r.http_status == 0)
+        return (!body.empty() && outbox_record(path, body)) ? 0 : 2;
+    std::cout << r.body << "\n";
+    return (r.http_status >= 200 && r.http_status < 300) ? 0 : 1;
+}
 
+int main(int argc, char** argv) {
+    // A line beginning with '/' is ALWAYS a command of the FULL client's
+    // REPL — deliver verbatim, never catch locally.
+    const bool slashed = argc >= 2 && argv[1][0] == '/';
+
+    if (argc < 2 || argv[1] == std::string("help")) { usage(); return slashed ? 9 : 0; }
+    const std::string arg1 = argv[1];
+
+    if (!slashed) {
+        if (arg1 == "raw")      return cmd_raw(host_from(), bearer_from(), argc, argv);
+        if (arg1 == "register") return cmd_register(host_from(), bearer_from(), argc, argv);
+
+        const Target tgt = resolve_target(argc, argv);
+        const std::string host = !tgt.host.empty() ? tgt.host : host_from();
+        const std::string bearer = bearer_from();
+        outbox_flush(host, bearer);   // deliver anything spooled earlier
+
+        if (arg1 == "last")     return cmd_last(host, bearer);
+        if (arg1 == "sync")     return cmd_sync(host, bearer, argc, argv);
+        if (arg1 == "proxy")    return cmd_proxy(host, bearer, argc, argv);
+        if (arg1 == "profile")  return cmd_profile(argc, argv);
+        if (arg1 == "logout")   return cmd_logout(argc, argv);
+        if (arg1 == "render") {
+            const std::string ses = need_session(argc, argv);
+            if (ses.empty()) return 1;
+            const std::string room = argc >= 4 ? argv[3] : "";
+            const pt::HttpResult fr = pt::http_post_plain(
+                host + "/api/ttys/render", render_body(ses, room), bearer);
+            if (fr.http_status == 0)
+                return outbox_record("api/ttys/render", render_body(ses, room)) ? 0 : 2;
+            std::cout << "\x1b[2J\x1b[H" << fr.body;
+            return 0;
+        }
+        if (arg1 == "term") {
+            const std::string ses = need_session(argc, argv);
+            if (ses.empty()) return 1;
+            return term_loop(host, bearer, ses, argc >= 4 ? argv[3] : "");
+        }
+    }
+
+    // ---- THE PROXY ESSENCE ----
+    // Anything else is a LINE FOR THE FULL CLIENT: chat text or one of its
+    // own REPL commands ("/join …", "/help", "dump …"). Deliver verbatim,
+    // then print what the full client answered (refreshed screen).
     const Target tgt = resolve_target(argc, argv);
     const std::string host = !tgt.host.empty() ? tgt.host : host_from();
     const std::string bearer = bearer_from();
-    outbox_flush(host, bearer);          // deliver anything spooled earlier
+    const std::string ses = need_session(2, argv);   // no <session> slot here
+    if (ses.empty()) return 1;
 
-    if (path == "register") return cmd_register(host, bearer, argc, argv);
-    if (path == "last")  return cmd_last(host, bearer);
-    if (path == "sync")  return cmd_sync(host, bearer, argc, argv);
-    if (path == "proxy") return cmd_proxy(host, bearer, argc, argv);
-    if (path == "profile") return cmd_profile(argc, argv);
-    if (path == "logout") return cmd_logout(argc, argv);
-    if (path == "term") {
-        const std::string ses = need_session(argc, argv);
-        if (ses.empty()) return 1;
-        return term_loop(host, bearer, ses, argc >= 4 ? argv[3] : "");
+    std::string line = arg1;
+    for (int i = 2; i < argc; ++i) line += std::string(" ") + argv[i];
+    const std::string ibody =
+        "{\"session\":\"" + jesc(ses) +
+        "\",\"input\":\"" + jesc(line) + "\"}";
+    const pt::HttpResult ir =
+        pt::http_post_json(host + "/api/ttys/input", ibody, bearer);
+    if (ir.http_status == 0 && outbox_record("api/ttys/input", ibody)) {
+        std::cout << "(offline — будет доставлено при связи)\n";
+        return 0;
     }
-
-    std::string body;
-    if (path == "render") {
-        const std::string ses = need_session(argc, argv);
-        if (ses.empty()) return 1;
-        const std::string room_opt = argc >= 4 ? argv[3] : "";
-        body = render_body(ses, room_opt);         // sized locally
-        path = "api/ttys/render";
-    } else if (path != "term" && argc >= 3) {
-        body = argv[2];                            // verbatim pipe
-    }
-
-    if (path != "term") {
-        const bool want_plain = (path == "api/ttys/render");
-        const pt::HttpResult r = body.empty()
-            ? pt::http_get_json(host + "/" + path, bearer)
-            : want_plain ? pt::http_post_plain(host + "/" + path, body, bearer)
-                         : pt::http_post_json(host + "/" + path, body, bearer);
-        if (r.http_status == 0) {
-            if (!body.empty() && outbox_record(path, body)) return 0;
-            std::cerr << "progterm: cannot reach relay (curl "
-                      << static_cast<long>(r.code) << ")\n";
-            return 2;
-        }
-        std::cout << r.body << "\n";
-        return (r.http_status >= 200 && r.http_status < 300) ? 0 : 1;
-    }
-
+    const pt::HttpResult fr = pt::http_post_plain(
+        host + "/api/ttys/render", render_body(ses, ""), bearer);
+    if (fr.http_status == 200)
+        std::cout << "\x1b[2J\x1b[H" << fr.body;
+    else std::cout << fr.body << "\n";
     return 0;
 }
