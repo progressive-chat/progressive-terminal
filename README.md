@@ -8,7 +8,18 @@ stores nothing anywhere.
 ```
 progterm <path> [json-body]     # POST when a body is given, GET otherwise
 progterm render <session> [room]   # static frame, auto-sized to your tty
+progterm term <session> [room]     # remote-terminal loop (plain-text screen)
 ```
+
+**Verbs caught locally** (before the wire — no hand-written JSON needed):
+`help` · `last` (latest session id) · `sync <session>` ·
+`proxy [on <preset>|off]` · plus the two above. Everything else is a
+verbatim pipe.
+
+**Offline store-and-forward:** set `PROGTERM_OUTBOX=<file>` and any POST
+that cannot reach the relay is spooled there, then auto-delivered on the
+next successful contact. Without the variable the client stays
+zero-storage.
 
 Environment:
 
@@ -16,6 +27,7 @@ Environment:
 |---|---|
 | `PROGTERM_HOST` | relay address; else scan 127.0.0.1 near `:29325`; else `http://127.0.0.1:29325` |
 | `PROGTERM_TOKEN` | sent as `Authorization: Bearer` when set |
+| `PROGTERM_OUTBOX` | optional spool file for offline POSTs (see above) |
 
 Exit codes: `0` = 2xx, `1` = HTTP error (body still printed), `2` = no route
 to the relay.
