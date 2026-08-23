@@ -20,7 +20,8 @@ the heavy client.
 - Sends it as `term:{cols,rows}` in the request.
 - Renders the server's ASCII UI frame and prints it.
 - Offers the full flow without a big binary: `register`, `session`, `input`,
-  `sync` over the same HTTP API.
+  `sync`, plus profile containers (`profile …`), relay proxy control
+  (`proxy on/off/status`) and `logout` — all over the same HTTP API.
 
 ## Build
 
@@ -105,7 +106,7 @@ expands outward from the base (base, +1, −1, +2, …) up to `--scan-range`
 configuration:
 
 ```bash
-progressive-terminal register --name alice \
+progressive-terminal register \
     --homeserver https://example.org --username alice --password secret
 # ^ no --host: auto-scans 127.0.0.1:29315..29335, connects to the relay
 
@@ -138,7 +139,7 @@ progressive-terminal session \
     --token TOKEN --device DEV
 
 # 3. Render the ASCII UI (auto-detects your terminal size):
-progressive-terminal render --session "@a2:mock.local" --static
+progressive-terminal render --static   # session comes from the active profile
 
 # 4. Interactive remote terminal: dumb branch, `progterm term <session>`.
 ```
