@@ -166,16 +166,6 @@ bool remove_profile(std::string name) {
     return true;
 }
 
-bool clear_all() {
-    for (auto& p : list_profiles()) std::remove(profile_path(p.name).c_str());
-    std::remove(current_file().c_str());
-#ifdef __unix__
-    rmdir(profiles_dir().c_str());
-    rmdir(base_dir().c_str());
-#endif
-    return true;
-}
-
 void ensure_default_profile() {
     if (!list_profiles().empty()) return;
     Profile p;

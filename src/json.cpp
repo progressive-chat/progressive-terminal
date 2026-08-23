@@ -3,6 +3,9 @@
 
 namespace pt { namespace json {
 
+namespace {
+
+// Escape a raw string for inclusion inside a JSON value (no quotes added).
 std::string escape(const std::string& s) {
     std::string o;
     o.reserve(s.size() + 8);
@@ -27,9 +30,13 @@ std::string escape(const std::string& s) {
     return o;
 }
 
+}  // namespace
+
 std::string str(const std::string& s) {
     return "\"" + escape(s) + "\"";
 }
+
+namespace {
 
 std::string unescape(std::string_view s) {
     std::string o;
@@ -71,6 +78,8 @@ std::string unescape(std::string_view s) {
     return o;
 }
 
+}  // namespace
+
 static std::string_view ltrim(std::string_view v) {
     while (!v.empty() && std::isspace(static_cast<unsigned char>(v[0]))) v.remove_prefix(1);
     return v;
@@ -101,25 +110,6 @@ bool get_string(std::string_view body, std::string_view key, std::string& out) {
     }
     out = unescape(raw);
     return true;
-}
-
-bool get_int(std::string_view body, std::string_view key, long& out) {
-    std::string needle = "\"";
-    needle.append(key.begin(), key.end());
-    needle += "\"";
-
-    size_t pos = body.find(needle);
-    if (pos == std::string_view::npos) return false;
-    pos += needle.size();
-    while (pos < body.size() && (body[pos] == ':' || std::isspace(static_cast<unsigned char>(body[pos])))) pos++;
-    if (pos >= body.size() || body[pos] == '"') return false;
-    try {
-        size_t used = 0;
-        out = std::stol(std::string(body.substr(pos)), &used);
-        return true;
-    } catch (...) {
-        return false;
-    }
 }
 
 }}  // namespace pt::json

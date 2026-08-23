@@ -13,7 +13,6 @@ struct Profile {
     std::string proxy;    // socks5://[u:p@]h:p | http://h:p | off | "" (server default)
     std::string host;
     std::string session;
-    bool has_account() const { return !session.empty(); }
 };
 
 // Upsert profile `p.name`. Enforces the "at least one enabled" invariant.
@@ -33,8 +32,6 @@ bool set_enabled(const std::string& name, bool on);
 
 // Remove a profile. Refuses if it is the only enabled one.
 bool remove_profile(std::string name);
-
-bool clear_all();
 
 // Create a default enabled profile ("default") if no profiles exist.
 void ensure_default_profile();
