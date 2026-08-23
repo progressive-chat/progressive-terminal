@@ -18,9 +18,11 @@ Args parse(int argc, char** argv) {
     Args a;
     for (int i = 2; i < argc; ++i) {
         std::string s = argv[i];
-        if (s.rfind("--", 0) == 0) {
-            std::string key = s.substr(2);
-            if (i + 1 < argc && std::string(argv[i + 1]).rfind("--", 0) != 0) {
+        if (!s.empty() && s[0] == '-') {
+            const size_t dash = (s.rfind("--", 0) == 0) ? 2 : 1;
+            std::string key = s.substr(dash);
+            if (i + 1 < argc && std::string(argv[i + 1]).rfind("--", 0) != 0 &&
+                argv[i + 1][0] != '-') {
                 a.opt[key] = argv[++i];
             } else {
                 a.opt[key] = "1";
@@ -52,6 +54,13 @@ void print_json_field(const pt::HttpResult& r, const std::string& field) {
 }
 
 int cmd_register(Args& a) {
+    if (a.opt.count("help") || a.opt.count("h")) {
+        std::cerr << "Usage: progressive-terminal register --homeserver <url> "
+                     "--username <u> --password <p> [--reg-token <t>] [--proxy <spec>]\n"
+                     "  --proxy <spec>  socks5://[u:p@]h:p | http://h:p | off "
+                     "(overrides server default)\n";
+        return 0;
+    }
     const std::string host = host_from(a);
     const std::string body = "{"
         "\"homeserver\":" + pt::json::str(a.opt["homeserver"]) +
@@ -72,6 +81,11 @@ int cmd_register(Args& a) {
 }
 
 int cmd_session(Args& a) {
+    if (a.opt.count("help") || a.opt.count("h")) {
+        std::cerr << "Usage: progressive-terminal session --homeserver <url> "
+                     "--user <@id> --token <t> --device <d> [--proxy <spec>]\n";
+        return 0;
+    }
     const std::string host = host_from(a);
     const std::string body = "{"
         "\"account\":{"
@@ -93,6 +107,10 @@ int cmd_session(Args& a) {
 }
 
 int cmd_input(Args& a) {
+    if (a.opt.count("help") || a.opt.count("h")) {
+        std::cerr << "Usage: progressive-terminal input --session <id> --text <line>\n";
+        return 0;
+    }
     const std::string host = host_from(a);
     const std::string body = "{"
         "\"session\":" + pt::json::str(a.opt["session"]) +
@@ -102,6 +120,10 @@ int cmd_input(Args& a) {
 }
 
 int cmd_sync(Args& a) {
+    if (a.opt.count("help") || a.opt.count("h")) {
+        std::cerr << "Usage: progressive-terminal sync --session <id>\n";
+        return 0;
+    }
     const std::string host = host_from(a);
     const std::string body = "{\"session\":" + pt::json::str(a.opt["session"]) + "}";
     pt::HttpResult r = pt::http_post_json(host + "/api/ttys/sync", body);
@@ -110,6 +132,7 @@ int cmd_sync(Args& a) {
 }
 
 int cmd_render(Args& a) {
+    if (a.opt.count("help") || a.opt.count("h")) { pt::usage_render(); return 0; }
     const std::string host = host_from(a);
     const bool static_only = a.opt.count("static") > 0;
     const int cols = a.opt.count("cols") ? std::stoi(get(a, "cols")) : 0;
