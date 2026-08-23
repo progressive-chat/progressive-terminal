@@ -13,7 +13,7 @@ size_t write_cb(void* ptr, size_t size, size_t nmemb, std::string* user) {
 
 // One request path for GET and POST: an empty `body` means GET.
 HttpResult send(const std::string& url, const std::string& body,
-                const std::string& bearer) {
+                const std::string& bearer, const std::string& accept) {
     HttpResult res;
     CURL* c = curl_easy_init();
     if (!c) return res;
@@ -23,6 +23,8 @@ HttpResult send(const std::string& url, const std::string& body,
         hdr = curl_slist_append(hdr, "Content-Type: application/json");
     if (!bearer.empty())
         hdr = curl_slist_append(hdr, ("Authorization: Bearer " + bearer).c_str());
+    if (!accept.empty())
+        hdr = curl_slist_append(hdr, ("Accept: " + accept).c_str());
 
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
     if (hdr) curl_easy_setopt(c, CURLOPT_HTTPHEADER, hdr);
@@ -47,11 +49,16 @@ HttpResult send(const std::string& url, const std::string& body,
 
 HttpResult http_post_json(const std::string& url, const std::string& body,
                           const std::string& bearer) {
-    return send(url, body, bearer);
+    return send(url, body, bearer, "");
+}
+
+HttpResult http_post_plain(const std::string& url, const std::string& body,
+                           const std::string& bearer) {
+    return send(url, body, bearer, "text/plain");
 }
 
 HttpResult http_get_json(const std::string& url, const std::string& bearer) {
-    return send(url, "", bearer);
+    return send(url, "", bearer, "");
 }
 
 }  // namespace pt

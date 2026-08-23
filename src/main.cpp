@@ -56,6 +56,57 @@ void term_size(int& cols, int& rows) {
         if (const int v = std::atoi(r)) rows = v;
 }
 
+// Escape a raw line as a JSON string value (no surrounding quotes). The
+// only place the dumb client formats data — input lines can hold anything.
+std::string jesc(const std::string& s) {
+    std::string o;
+    for (char c : s) {
+        if (c == '"' || c == '\\') { o += '\\'; o += c; }
+        else if (c == '\n') o += "\\n";
+        else if (c == '\r') o += "\\r";
+        else if (c == '\t') o += "\\t";
+        else o += c;
+    }
+    return o;
+}
+
+// progterm term <session> [room] — the remote-terminal loop: every stdin
+// line is delivered to the full client's REPL, then the refreshed screen
+// comes back as plain text and is printed verbatim.
+int term_loop(const std::string& host, const std::string& bearer, int argc,
+              char** argv) {
+    const std::string session = argv[2];
+    const std::string room = argc >= 4 ? argv[3] : "";
+    int c = 0, r = 0;
+    term_size(c, r);
+    const std::string rbody =
+        "{\"session\":\"" + jesc(session) + "\""
+        ",\"term\":{\"cols\":" + std::to_string(c) +
+        ",\"rows\":" + std::to_string(r) + "}" +
+        (room.empty() ? "" : ",\"room\":\"" + jesc(room) + "\"") +
+        ",\"view\":\"static\"}";
+    const std::string in_url = host + "/api/ttys/input";
+    const std::string rd_url = host + "/api/ttys/render";
+
+    pt::http_post_plain(rd_url, rbody, bearer);  // first paint
+    std::cout << "term> " << std::flush;
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line == ":q" || line == "/quit") return 0;
+        if (!line.empty())
+            pt::http_post_json(in_url,
+                "{\"session\":\"" + jesc(session) +
+                "\",\"input\":\"" + jesc(line) + "\"}", bearer);
+        const pt::HttpResult fr = pt::http_post_plain(rd_url, rbody, bearer);
+        if (fr.http_status == 200)
+            std::cout << "\x1b[2J\x1b[H" << fr.body << "term> " << std::flush;
+        else
+            std::cerr << "[" << fr.http_status << "] " << fr.body << "\nterm> "
+                      << std::flush;
+    }
+    return 0;
+}
+
 // progterm render <session> [room] — one static ASCII frame, sized to the
 // local terminal. A positional verb, not an option: no flags exist here.
 std::string render_body(int argc, char** argv) {
@@ -74,7 +125,8 @@ void usage() {
                  "example: progterm api/ttys/proxy "
               << "'{\"action\":\"on\",\"preset\":\"tor\"}'\n"
               << "         progterm render <session> [room]   # static frame, "
-              "auto-sized\n";
+              "auto-sized\n"
+              << "         progterm term <session> [room]     # remote-terminal loop\n";
 }
 
 }  // namespace
@@ -83,6 +135,10 @@ int main(int argc, char** argv) {
     if (argc < 2) { usage(); return 1; }
     std::string path = argv[1];
     if (!path.empty() && path[0] == '/') path.erase(0, 1);
+    if (path == "term") {
+        if (argc < 3) { usage(); return 1; }
+        return term_loop(host_from(), bearer_from(), argc, argv);
+    }
     std::string body;
     if (path == "render") {
         if (argc < 3) { usage(); return 1; }
