@@ -29,8 +29,12 @@ export PROGTERM_TOKEN=secret
 progterm api/ttys/proxy '{"action":"on","preset":"tor"}'
 progterm api/ttys/proxy                      # status (GET)
 
-# register; keep the session id wherever you like (shell var, file, direnv)
-S=$(progterm api/ttys/register "$(cat reg.json)" | jq -r .session)
+# bootstrap: ask the RELAY for the latest session (nothing is stored on
+# this device; after any restart just run this line again)
+S=$(progterm api/ttys/session/last | jq -r .session)
+
+# or create a brand-new account from the pipe (one-off, home-side usually)
+# S=$(progterm api/ttys/register "$(cat reg.json)" | jq -r .session)
 
 # one input line
 progterm api/ttys/input "{\"session\":\"$S\",\"input\":\"hello\"}"
