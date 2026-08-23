@@ -29,10 +29,11 @@ The bundle is a plain text snapshot of every profile plus the `current`
 pointer — human-readable, diffable, and byte-stable on round-trip. It
 carries session ids, so treat it like a secret.
 
-**Offline store-and-forward:** set `PROGTERM_OUTBOX=<file>` and any POST
-that cannot reach the relay is spooled there, then auto-delivered on the
-next successful contact. Without the variable the client stays
-zero-storage.
+**Offline catch (on by default):** every POST that cannot reach the relay
+is spooled to `~/.config/progterm-lite/outbox` and auto-delivered on the
+next successful contact — including lines typed in a `term` session while
+offline. Tune it with `PROGTERM_OUTBOX`: another file, or an empty value
+to disable spooling entirely.
 
 Environment:
 

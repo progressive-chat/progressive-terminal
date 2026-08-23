@@ -50,8 +50,18 @@ std::string bearer_from() {
 // first on the next successful contact. Without the variable the client
 // stays zero-storage.
 std::string outbox_path() {
+    // Catch-offline is ON by default: undelivered POSTs wait in
+    // ~/.config/progterm-lite/outbox until the relay answers again.
+    //   PROGTERM_OUTBOX=<file>  use another file
+    //   PROGTERM_OUTBOX=        (empty value) disable spooling entirely
     const char* e = std::getenv("PROGTERM_OUTBOX");
-    return e ? e : "";
+    if (!e) {
+        std::string d = getenv("HOME") ? getenv("HOME") : ".";
+        mkdir((d + "/.config").c_str(), 0700);
+        mkdir((d + "/.config/progterm-lite").c_str(), 0700);
+        return d + "/.config/progterm-lite/outbox";
+    }
+    return e;   // may be "" -> spooling disabled
 }
 
 void outbox_flush(const std::string& host, const std::string& bearer) {
@@ -173,10 +183,15 @@ int term_loop(const std::string& host, const std::string& bearer,
     std::string line;
     while (std::getline(std::cin, line)) {
         if (line == ":q" || line == "/quit") return 0;
-        if (!line.empty())
-            pt::http_post_json(in_url,
+        if (!line.empty()) {
+            const std::string ibody =
                 "{\"session\":\"" + jesc(session) +
-                "\",\"input\":\"" + jesc(line) + "\"}", bearer);
+                "\",\"input\":\"" + jesc(line) + "\"}";
+            const pt::HttpResult ir =
+                pt::http_post_json(in_url, ibody, bearer);
+            if (ir.http_status == 0)
+                outbox_record("api/ttys/input", ibody);
+        }
         const pt::HttpResult fr = pt::http_post_plain(rd_url, frame_body(), bearer);
         if (fr.http_status == 200)
             std::cout << "\x1b[2J\x1b[H" << fr.body << "term> " << std::flush;
@@ -396,6 +411,8 @@ int cmd_sync(const std::string& host, const std::string& bearer, int argc,
     const std::string body = "{\"session\":\"" + jesc(ses) + "\"}";
     const pt::HttpResult r = pt::http_post_plain(
         host + "/api/ttys/sync", body, bearer);
+    if (r.http_status == 0)
+        return outbox_record("api/ttys/sync", body) ? 0 : 2;
     std::cout << r.body << "\n";
     return r.http_status == 200 ? 0 : 1;
 }
@@ -415,6 +432,8 @@ int cmd_proxy(const std::string& host, const std::string& bearer, int argc,
     }
     const pt::HttpResult r =
         pt::http_post_json(host + "/api/ttys/proxy", body, bearer);
+    if (r.http_status == 0)
+        return outbox_record("api/ttys/proxy", body) ? 0 : 2;
     std::cout << r.body << "\n";
     return r.http_status == 200 ? 0 : 1;
 }
