@@ -39,8 +39,8 @@ std::string host_from(const Args& a) {
     auto it = a.opt.find("host");
     if (it != a.opt.end()) return it->second;
     if (const char* e = std::getenv("PROGTERM_HOST")) return e;
-    std::string h, s;
-    if (pt::store::load_session(h, s) && !h.empty()) return h;
+    pt::store::Account acc;
+    if (pt::store::load_account("", acc) && !acc.host.empty()) return acc.host;
     return "http://127.0.0.1:29325";
 }
 
@@ -51,14 +51,14 @@ const std::string& get(const Args& a, const std::string& k) {
     return it == a.opt.end() ? empty : it->second;
 }
 
-// Resolve the session id: explicit --session wins, otherwise fall back to the
-// cached one saved by a previous register/session (see pt::store).
-std::string resolve_session(const Args& a) {
-    std::string sid = get(a, "session");
-    if (!sid.empty()) return sid;
-    std::string h, s;
-    if (pt::store::load_session(h, s)) return s;
-    return "";
+// Resolve the active account: explicit --account wins, otherwise the current
+// one. Command-line --host / --proxy override the cached values.
+pt::store::Account resolve_account(const Args& a) {
+    pt::store::Account acc;
+    pt::store::load_account(get(a, "account"), acc);
+    if (a.opt.count("host"))   acc.host = get(a, "host");
+    if (a.opt.count("proxy"))  acc.proxy = get(a, "proxy");
+    return acc;
 }
 
 void print_json_field(const pt::HttpResult& r, const std::string& field) {
@@ -68,10 +68,12 @@ void print_json_field(const pt::HttpResult& r, const std::string& field) {
 
 int cmd_register(Args& a) {
     if (a.opt.count("help") || a.opt.count("h")) {
-        std::cerr << "Usage: progressive-terminal register --homeserver <url> "
-                     "--username <u> --password <p> [--reg-token <t>] [--proxy <spec>]\n"
+        std::cerr << "Usage: progressive-terminal register [--name <n>] "
+                     "--homeserver <url> --username <u> --password <p> "
+                     "[--reg-token <t>] [--proxy <spec>]\n"
+                     "  --name <n>    label this account (default: \"default\")\n"
                      "  --proxy <spec>  socks5://[u:p@]h:p | http://h:p | off "
-                     "(overrides server default)\n";
+                     "(per-account proxy; overrides server default)\n";
         return 0;
     }
     const std::string host = host_from(a);
@@ -91,15 +93,25 @@ int cmd_register(Args& a) {
     for (const char* f : {"session", "user_id", "access_token", "device_id"})
         print_json_field(r, f);
     std::string sid;
-    if (pt::json::get_string(r.body, "session", sid) && !sid.empty())
-        pt::store::save_session(host, sid);
+    if (pt::json::get_string(r.body, "session", sid) && !sid.empty()) {
+        pt::store::Account acc;
+        acc.name = get(a, "name");
+        if (acc.name.empty()) acc.name = "default";
+        acc.host = host;
+        acc.session = sid;
+        acc.proxy = get(a, "proxy");
+        pt::store::save_account(acc);
+    }
     return 0;
 }
 
 int cmd_session(Args& a) {
     if (a.opt.count("help") || a.opt.count("h")) {
-        std::cerr << "Usage: progressive-terminal session --homeserver <url> "
-                     "--user <@id> --token <t> --device <d> [--proxy <spec>]\n";
+        std::cerr << "Usage: progressive-terminal session [--name <n>] "
+                     "--homeserver <url> --user <@id> --token <t> --device <d> "
+                     "[--proxy <spec>]\n"
+                     "  --name <n>    label this account (default: \"default\")\n"
+                     "  --proxy <spec>  per-account proxy (socks5/http/off)\n";
         return 0;
     }
     const std::string host = host_from(a);
@@ -120,42 +132,50 @@ int cmd_session(Args& a) {
     }
     for (const char* f : {"session", "key"}) print_json_field(r, f);
     std::string sid;
-    if (pt::json::get_string(r.body, "session", sid) && !sid.empty())
-        pt::store::save_session(host, sid);
+    if (pt::json::get_string(r.body, "session", sid) && !sid.empty()) {
+        pt::store::Account acc;
+        acc.name = get(a, "name");
+        if (acc.name.empty()) acc.name = "default";
+        acc.host = host;
+        acc.session = sid;
+        acc.proxy = get(a, "proxy");
+        pt::store::save_account(acc);
+    }
     return 0;
 }
 
 int cmd_input(Args& a) {
     if (a.opt.count("help") || a.opt.count("h")) {
-        std::cerr << "Usage: progressive-terminal input --session <id> --text <line>\n";
+        std::cerr << "Usage: progressive-terminal input [--account <name>] "
+                     "--text <line>\n";
         return 0;
     }
-    const std::string host = host_from(a);
-    const std::string sid = resolve_session(a);
+    const pt::store::Account acc = resolve_account(a);
+    if (acc.session.empty()) { std::cerr << "error: no session (run register/session or use <name>)\n"; return 1; }
     const std::string body = "{"
-        "\"session\":" + pt::json::str(sid) +
+        "\"session\":" + pt::json::str(acc.session) +
         ",\"input\":"   + pt::json::str(a.opt["text"]) + "}";
-    pt::http_post_json(host + "/api/ttys/input", body);
+    pt::http_post_json(acc.host + "/api/ttys/input", body);
     return 0;
 }
 
 int cmd_sync(Args& a) {
     if (a.opt.count("help") || a.opt.count("h")) {
-        std::cerr << "Usage: progressive-terminal sync --session <id>\n";
+        std::cerr << "Usage: progressive-terminal sync [--account <name>]\n";
         return 0;
     }
-    const std::string host = host_from(a);
-    const std::string sid = resolve_session(a);
-    const std::string body = "{\"session\":" + pt::json::str(sid) + "}";
-    pt::HttpResult r = pt::http_post_json(host + "/api/ttys/sync", body);
+    const pt::store::Account acc = resolve_account(a);
+    if (acc.session.empty()) { std::cerr << "error: no session (run register/session or use <name>)\n"; return 1; }
+    const std::string body = "{\"session\":" + pt::json::str(acc.session) + "}";
+    pt::HttpResult r = pt::http_post_json(acc.host + "/api/ttys/sync", body);
     std::cout << r.body << "\n";
     return 0;
 }
 
 int cmd_render(Args& a) {
     if (a.opt.count("help") || a.opt.count("h")) { pt::usage_render(); return 0; }
-    const std::string host = host_from(a);
-    const std::string sid = resolve_session(a);
+    const pt::store::Account acc = resolve_account(a);
+    if (acc.session.empty()) { std::cerr << "error: no session (run register/session or use <name>)\n"; return 1; }
     const bool static_only = a.opt.count("static") > 0;
     const int cols = a.opt.count("cols") ? std::stoi(get(a, "cols")) : 0;
     const int rows = a.opt.count("rows") ? std::stoi(get(a, "rows")) : 0;
@@ -163,28 +183,69 @@ int cmd_render(Args& a) {
 #ifdef PROGTERM_TUI
     // Interactive mode when explicitly requested AND a TUI build.
     if (a.opt.count("tui")) {
-        if (sid.empty()) { std::cerr << "error: --session required (or run register/session first)\n"; return 1; }
-        return pt::run_tui(host, sid, get(a, "room"));
+        return pt::run_tui(acc.host, acc.session, get(a, "room"));
     }
 #endif
 
-    const std::string frame = pt::request_frame(host, sid,
+    const std::string frame = pt::request_frame(acc.host, acc.session,
                                                 get(a, "room"), static_only, cols, rows);
     if (frame.rfind("error:", 0) == 0) { std::cerr << frame << "\n"; return 1; }
     std::cout << frame;
     return 0;
 }
 
-int cmd_logout(Args& a) {
+int cmd_use(Args& a) {
     if (a.opt.count("help") || a.opt.count("h")) {
-        std::cerr << "Usage: progressive-terminal logout\n"
-                     "  Forget the cached session/host (removes the local cache file).\n";
+        std::cerr << "Usage: progressive-terminal use <name>\n"
+                     "  Make <name> the active account for subsequent commands.\n";
         return 0;
     }
-    if (pt::store::clear_session())
-        std::cout << "cached session cleared\n";
+    std::string name = get(a, "account");
+    if (name.empty() && !a.pos.empty()) name = a.pos.front();
+    if (name.empty()) { std::cerr << "error: usage: use <name>\n"; return 1; }
+    pt::store::Account acc;
+    if (!pt::store::load_account(name, acc)) {
+        std::cerr << "error: unknown account '" << name << "'\n";
+        return 1;
+    }
+    pt::store::set_current(name);
+    std::cout << "active account: " << name << "\n";
+    return 0;
+}
+
+int cmd_accounts(Args& a) {
+    if (a.opt.count("help") || a.opt.count("h")) {
+        std::cerr << "Usage: progressive-terminal accounts\n"
+                     "  List configured accounts and mark the active one.\n";
+        return 0;
+    }
+    const std::string cur = pt::store::current_name();
+    for (const auto& acc : pt::store::list_accounts()) {
+        std::cout << (acc.name == cur ? "* " : "  ") << acc.name
+                  << "  host=" << (acc.host.empty() ? "-" : acc.host)
+                  << "  proxy=" << (acc.proxy.empty() ? "(server default)" : acc.proxy)
+                  << "  session=" << (acc.session.empty() ? "(none)" : acc.session)
+                  << "\n";
+    }
+    return 0;
+}
+
+int cmd_logout(Args& a) {
+    if (a.opt.count("help") || a.opt.count("h")) {
+        std::cerr << "Usage: progressive-terminal logout [--account <name>] [--all]\n"
+                     "  Forget an account (or all). Removes the local cache only.\n";
+        return 0;
+    }
+    if (a.opt.count("all")) {
+        pt::store::clear_all();
+        std::cout << "all accounts cleared\n";
+        return 0;
+    }
+    const std::string name = get(a, "account");
+    if (pt::store::remove_account(name))
+        std::cout << "account removed\n";
     else
-        std::cout << "nothing cached\n";
+        std::cout << "nothing to remove\n";
     return 0;
 }
 
@@ -194,20 +255,25 @@ void usage() {
         "Usage: progressive-terminal <command> [--host <url>] [options]\n\n"
         "Commands:\n"
         "  render     request the ASCII UI (detect terminal size, send, print)\n"
-        "  register   POST /api/ttys/register -> prints session + credentials\n"
-        "  session    POST /api/ttys/session  -> prints session id\n"
+        "  register   POST /api/ttys/register -> saves the account\n"
+        "  session    POST /api/ttys/session  -> saves the account\n"
         "  input      POST /api/ttys/input    (send one line to a session)\n"
         "  sync       POST /api/ttys/sync      (poll sync state)\n"
-        "  logout     forget the cached session/host\n\n"
-        "Global:\n"
-        "  --host <url>   server endpoint (or env PROGTERM_HOST,\n"
-        "                 or the cached host from a previous register/session)\n"
-        "  -h, --help     this help\n\n"
-        "Note: register/session cache the (host, session) locally in\n"
-        "  $HOME/.config/progressive-terminal/session, so later commands\n"
-        "  can omit --session / --host. Run 'logout' to forget it.\n\n"
+        "  use <name> switch the active account\n"
+        "  accounts   list configured accounts\n"
+        "  logout     forget an account (or --all)\n\n"
+        "Global / per-command:\n"
+        "  --host <url>     server endpoint (or $PROGTERM_HOST / cached host)\n"
+        "  --account <name> pick an account (render/input/sync); default=active\n"
+        "  --name <name>    label an account on register/session (default)\n"
+        "  --proxy <spec>   per-account proxy: socks5://[u:p@]h:p | http://h:p | off\n"
+        "  -h, --help       this help\n\n"
+        "Multi-account: each register/session stores host+session+proxy under\n"
+        "  $HOME/.config/progressive-terminal/accounts/<name>; 'use' selects the\n"
+        "  active one. This is the ONLY local state (no message DB). 'logout'\n"
+        "  removes it; the server still holds all real session state in RAM.\n\n"
         "render options:\n"
-        "  --session <id>  optional (uses the cached session if omitted)\n"
+        "  --account <name> optional (uses the active account if omitted)\n"
         "  --room <id>     optional room to focus\n"
         "  --static        single non-interactive snapshot (default)\n"
 #ifdef PROGTERM_TUI
@@ -233,6 +299,8 @@ int main(int argc, char** argv) {
     if (cmd == "session")  return cmd_session(a);
     if (cmd == "input")    return cmd_input(a);
     if (cmd == "sync")     return cmd_sync(a);
+    if (cmd == "use")      return cmd_use(a);
+    if (cmd == "accounts") return cmd_accounts(a);
     if (cmd == "logout")   return cmd_logout(a);
 
     std::cerr << "unknown command: " << cmd << "\n";

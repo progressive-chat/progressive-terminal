@@ -37,23 +37,43 @@ cmake --build build
 When `BUILD_TUI=OFF`, `progressive-terminal render --tui` is unavailable and the
 binary contains only the request/print path.
 
-## Local session cache
+## Multi-account and per-account proxy
 
-This is the **only** state `progressive-terminal` keeps on disk — no message
-database, no Matrix data. On a successful `register` or `session`, the
-`(host, session)` pair is written to:
+`progressive-terminal` supports several accounts at once. Each `register` /
+`session` stores an account under a name (default `default`) together with its
+`host`, `session`, and a per-account `proxy`:
 
 ```
-$HOME/.config/progressive-terminal/session
+~/.config/progressive-terminal/accounts/<name>     # {host, session, proxy}
+~/.config/progressive-terminal/current            # active account name
 ```
 
-Later `render` / `input` / `sync` invocations then omit `--session` (and
-`--host`) and reuse the cached values automatically. The cached host is also
-used as a fallback for `PROGTERM_HOST`. Run `logout` to delete the cache file.
+This is the **only** state the client keeps on disk — no message database, no
+Matrix data. The `proxy` is per-account and forwarded to the server, which
+applies it to that account's homeserver traffic (overriding the server-wide
+default). Use `off` for a direct connection.
+
+```bash
+# Create / save accounts (each with its own proxy):
+progressive-terminal register --name alice --homeserver https://a.org \
+    --username alice --password secret --proxy off
+progressive-terminal session  --name bob   --homeserver https://b.org \
+    --user @bob:b.org --token TOK --device DEV --proxy socks5://127.0.0.1:9050
+
+progressive-terminal accounts          # list, '*' marks the active one
+progressive-terminal use alice         # switch active account
+progressive-terminal render --static   # uses the active account
+progressive-terminal render --account bob   # or pick one explicitly
+progressive-terminal logout --account bob    # forget one
+progressive-terminal logout --all           # forget everything
+```
+
+`render` / `input` / `sync` default to the active account unless `--account`
+is given. The active account's host also acts as a `PROGTERM_HOST` fallback.
 
 The server side (`progressive-cli serve --ttys`) still holds all real state; by
-default its database is in-memory (`:memory:`), so the session itself lives in
-the server's RAM and is lost when that server restarts.
+default its database is in-memory (`:memory:`), so a session lives in the
+server's RAM and is lost when that server restarts.
 
 ## Usage
 

@@ -1,19 +1,39 @@
 #pragma once
 #include <string>
+#include <vector>
 
 namespace pt { namespace store {
 
-// Persist the active (host, session) pair so subsequent invocations don't
-// need --session / --host on every call. Stored as a tiny JSON file under
-// $HOME/.config/progressive-terminal/session. This is the ONLY local state
-// progressive-terminal keeps — no message DB, no Matrix data.
-bool save_session(const std::string& host, const std::string& session);
+// Multi-account local cache. Each account is a separate JSON file under
+//   $HOME/.config/progressive-terminal/accounts/<name>
+// and the "active" one is tracked in .../current. This is the ONLY local
+// state progressive-terminal keeps — no message DB, no Matrix data.
+struct Account {
+    std::string name;
+    std::string host;
+    std::string session;
+    std::string proxy;   // socks5://.. | http://.. | off | "" (server default)
+    bool valid() const { return !session.empty(); }
+};
 
-// Load a previously saved (host, session). Returns false if absent or
-// unreadable. Either output may be left untouched when not present.
-bool load_session(std::string& host, std::string& session);
+// Upsert account `a.name` (creating the file) and make it the current one.
+bool save_account(const Account& a);
 
-// Remove the cached session file. Returns true if something was removed.
-bool clear_session();
+// Load account `name`; when `name` is empty, load the current account.
+// Returns false if not found.
+bool load_account(std::string name, Account& out);
+
+std::string current_name();
+bool set_current(const std::string& name);
+
+// All known accounts (may include ones without a session yet).
+std::vector<Account> list_accounts();
+
+// Remove account `name` (or the current one when empty). Returns true if a
+// file was removed.
+bool remove_account(std::string name);
+
+// Wipe the whole cache directory.
+bool clear_all();
 
 }}  // namespace pt::store

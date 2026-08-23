@@ -49,11 +49,11 @@ std::string request_frame(const std::string& host,
 
 void usage_render() {
     std::cerr <<
-        "Usage: progressive-terminal render --host <url> --session <id> "
+        "Usage: progressive-terminal render [--account <name>] "
         "[options]\n"
+        "  --account <name> account to render (defaults to the active one)\n"
         "  --host <url>     progressive-cli serve --ttys endpoint "
         "(or $PROGTERM_HOST)\n"
-        "  --session <id>   session id from register/session\n"
         "  --room <id>      optional room to focus\n"
         "  --static         request a single non-interactive ASCII snapshot\n"
         "  --cols <n>       force width (default: detect terminal)\n"
