@@ -15,6 +15,7 @@
 
 #include "http.hpp"
 #include "discover.hpp"
+#include "store.hpp"
 
 #include <iostream>
 #include <string>
@@ -84,24 +85,6 @@ bool outbox_record(const std::string& path, const std::string& body) {
 
 // ---- lite: remember exactly ONE session id ------------------------------
 // File lives next to nothing else; PROGTERM_SESSION overrides it entirely.
-std::string session_file() {
-    const char* e = std::getenv("PROGTERM_SESSION_FILE");
-    if (e) return e;
-    std::string d = getenv("HOME") ? getenv("HOME") : ".";
-    mkdir((d + "/.config").c_str(), 0700);
-    mkdir((d + "/.config/progterm-lite").c_str(), 0700);
-    return d + "/.config/progterm-lite/session";
-}
-std::string saved_session() {
-    if (const char* e = std::getenv("PROGTERM_SESSION")) return e;
-    std::ifstream f(session_file());
-    std::string s;
-    return std::getline(f, s) ? s : std::string();
-}
-void remember_session(const std::string& id) {
-    std::ofstream f(session_file(), std::ios::trunc);
-    f << id;
-}
 // Pull "session":"…" out of a relay response without a JSON parser.
 std::string sess_of(const std::string& body) {
     const std::string k = "\"session\":\"";
@@ -111,13 +94,34 @@ std::string sess_of(const std::string& body) {
     size_t e = body.find('"', p);
     return e == std::string::npos ? "" : body.substr(p, e - p);
 }
-// Resolve the session for a verb: explicit argument wins, else remembered.
+// What does the user mean by the (optional) <session> argument?
+// A name of an existing profile wins; otherwise it is a raw session id.
+// With no argument the CURRENT profile is used.
+struct Target {
+    std::string session, host, proxy, profile;
+    bool from_profile = false;
+};
+Target resolve_target(int argc, char** argv) {
+    Target t;
+    const std::string arg = argc >= 3 ? argv[2] : "";
+    pt::store::Profile p;
+    if (!arg.empty() && pt::store::load_profile(arg, p)) {
+        t = {p.session, p.host, p.proxy, p.name, true};
+    } else if (!arg.empty()) {
+        t.session = arg;                                   // raw session id
+    } else if (pt::store::load_profile("", p)) {
+        t = {p.session, p.host, p.proxy, p.name, true};
+    }
+    return t;
+}
+
+
+// Session for a verb; explains the profile-aware resolution on failure.
 std::string need_session(int argc, char** argv) {
-    if (argc >= 3 && *argv[2]) return argv[2];
-    const std::string s = saved_session();
-    if (!s.empty()) return s;
-    std::cerr << "no session yet — run: progterm register <homeserver> "
-                 "<user> <password>   (or pass <session>)\n";
+    const Target t = resolve_target(argc, argv);
+    if (!t.session.empty()) return t.session;
+    std::cerr << "no session — run: progterm register <homeserver> <user>"
+                 " <password> [profile]   (or pass <session|profile>)\n";
     return "";
 }
 
@@ -199,12 +203,91 @@ std::string render_body(const std::string& session, const std::string& room) {
 // Special verbs: either purely local (help) or formatters around one call,
 // so the user never writes JSON for the routine cases.
 
+// progterm profile <action> ... — containers for sessions (+ per-profile
+// proxy applied at register time). Ported from the sugar edition.
+int cmd_profile(int argc, char** argv) {
+    const std::string sub = argc >= 3 ? argv[2] : "list";
+    auto nm = [&](int idx) { return argc > idx ? argv[idx] : ""; };
+
+    if (sub == "list" || sub.empty()) {
+        std::cout << "profiles:\n";
+        const std::string cur = pt::store::current_name();
+        for (const auto& p : pt::store::list_profiles())
+            std::cout << (p.name == cur ? "* " : "  ") << p.name
+                      << (p.enabled ? "  [enabled]" : "  [disabled]")
+                      << "  proxy=" << (p.proxy.empty() ? "(server default)" : p.proxy)
+                      << "  session=" << (p.session.empty() ? "(none)" : p.session)
+                      << "\n";
+        return 0;
+    }
+    if (sub == "create" || sub == "set") {
+        const std::string name = nm(3);
+        if (name.empty()) { std::cerr << "profile name required\n"; return 1; }
+        pt::store::Profile p;
+        if (!pt::store::load_profile(name, p)) { p.name = name; p.enabled = true; }
+        if (argc >= 5) p.proxy = argv[4];
+        pt::store::save_profile(p);
+        std::cout << "profile " << name << " saved\n";
+        return 0;
+    }
+    if (sub == "enable" || sub == "disable") {
+        const std::string name = nm(3);
+        if (!pt::store::set_enabled(name, sub == "enable")) {
+            std::cerr << "cannot " << sub << " '" << name
+                      << "' (last enabled?)\n";
+            return 1;
+        }
+        std::cout << "profile " << name << (sub == "enable" ? " enabled" : " disabled") << "\n";
+        return 0;
+    }
+    if (sub == "current") {
+        const std::string name = nm(3);
+        if (!pt::store::set_current(name)) {
+            std::cerr << "unknown or disabled profile '" << name << "'\n";
+            return 1;
+        }
+        std::cout << "active profile: " << name << "\n";
+        return 0;
+    }
+    if (sub == "delete" || sub == "rm") {
+        const std::string name = nm(3);
+        if (!pt::store::remove_profile(name)) {
+            std::cerr << "cannot delete '" << name << "' (last enabled?)\n";
+            return 1;
+        }
+        std::cout << "profile " << name << " removed\n";
+        return 0;
+    }
+    std::cerr << "unknown profile action\n";
+    return 1;
+}
+
+// progterm logout [profile] — forget the session, keep the container.
+int cmd_logout(int argc, char** argv) {
+    std::string pname = argc >= 3 ? argv[2] : pt::store::current_name();
+    pt::store::Profile p;
+    if (!pt::store::load_profile(pname, p)) {
+        std::cerr << "unknown profile '" << pname << "'\n";
+        return 1;
+    }
+    p.session.clear();
+    pt::store::save_profile(p);
+    std::cout << "logged out of profile " << pname << "\n";
+    return 0;
+}
+
 int cmd_last(const std::string& host, const std::string& bearer) {
     const pt::HttpResult r =
         pt::http_get_json(host + "/api/ttys/session/last", bearer);
     if (r.http_status != 200) { std::cout << r.body << "\n"; return 1; }
     const std::string sid = sess_of(r.body);
-    if (!sid.empty()) remember_session(sid);   // auto-remember on bootstrap
+    if (!sid.empty()) {
+        pt::store::Profile p;
+        if (pt::store::load_profile("", p)) {
+            p.session = sid; p.enabled = true;
+            pt::store::save_profile(p);
+        }
+    }
     std::cout << sid << "\n";
     return 0;
 }
@@ -215,20 +298,29 @@ int cmd_register(const std::string& host, const std::string& bearer,
                  int argc, char** argv) {
     if (argc < 5) {
         std::cerr << "usage: progterm register <homeserver> <user> <password>"
-                  << "\n";
+                  << " [profile]\n";
         return 1;
     }
+    std::string pname = argc >= 6 ? argv[5] : "";
+    if (pname.empty()) { pt::store::ensure_default_profile(); pname = pt::store::current_name(); }
+    pt::store::Profile p;
+    if (!pt::store::load_profile(pname, p)) { p.name = pname; p.enabled = true; }
+    p.enabled = true;
+
     const std::string body =
-        "{\"homeserver\":\"" + jesc(argv[2]) +
-        "\",\"username\":\"" + jesc(argv[3]) +
-        "\",\"password\":\"" + jesc(argv[4]) +
-        "\",\"reg_token\":\"\",\"proxy\":\"\"}";
+        "{\"homeserver\":\"" + jesc(argv[2]) + "\""
+        ",\"username\":\"" + jesc(argv[3]) + "\""
+        ",\"password\":\"" + jesc(argv[4]) + "\""
+        ",\"reg_token\":\"\",\"proxy\":\"" + jesc(p.proxy) + "\"}";
+    if (getenv("PROGTERM_DEBUG")) std::cerr << "BODY> " << body << "\n";
     const pt::HttpResult r =
         pt::http_post_json(host + "/api/ttys/register", body, bearer);
     if (r.http_status != 200) { std::cout << r.body << "\n"; return 1; }
     const std::string sid = sess_of(r.body);
     if (sid.empty()) { std::cerr << "no session in response\n"; return 1; }
-    remember_session(sid);
+    p.session = sid; p.host = host;
+    pt::store::save_profile(p);
+    pt::store::set_current(p.name);
     std::cout << sid << "\n";
     return 0;
 }
@@ -282,7 +374,8 @@ int main(int argc, char** argv) {
     if (!path.empty() && path[0] == '/') path.erase(0, 1);
     if (path == "help") { usage(); return 0; }
 
-    const std::string host = host_from();
+    const Target tgt = resolve_target(argc, argv);
+    const std::string host = !tgt.host.empty() ? tgt.host : host_from();
     const std::string bearer = bearer_from();
     outbox_flush(host, bearer);          // deliver anything spooled earlier
 
@@ -290,6 +383,8 @@ int main(int argc, char** argv) {
     if (path == "last")  return cmd_last(host, bearer);
     if (path == "sync")  return cmd_sync(host, bearer, argc, argv);
     if (path == "proxy") return cmd_proxy(host, bearer, argc, argv);
+    if (path == "profile") return cmd_profile(argc, argv);
+    if (path == "logout") return cmd_logout(argc, argv);
     if (path == "term") {
         const std::string ses = need_session(argc, argv);
         if (ses.empty()) return 1;

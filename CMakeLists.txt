@@ -14,6 +14,7 @@ find_package(CURL REQUIRED)
 add_executable(progterm-lite
     src/main.cpp
     src/http.cpp
+    src/store.cpp
     src/discover.cpp
 )
 
