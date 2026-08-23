@@ -37,39 +37,50 @@ cmake --build build
 When `BUILD_TUI=OFF`, `progressive-terminal render --tui` is unavailable and the
 binary contains only the request/print path.
 
-## Multi-account and per-account proxy
+## Profiles (account containers) and per-profile proxy
 
-`progressive-terminal` supports several accounts at once. Each `register` /
-`session` stores an account under a name (default `default`) together with its
-`host`, `session`, and a per-account `proxy`:
+`progressive-terminal` uses **profiles** — containers that hold an optional
+account (session) plus connection settings such as a per-profile `proxy`. A
+profile may exist with **no account** (just proxy/host config), and **at least
+one profile is always enabled**:
 
 ```
-~/.config/progressive-terminal/accounts/<name>     # {host, session, proxy}
-~/.config/progressive-terminal/current            # active account name
+~/.config/progressive-terminal/profiles/<name>   # {enabled, proxy, host, session}
+~/.config/progressive-terminal/current          # active profile name (must be enabled)
 ```
 
 This is the **only** state the client keeps on disk — no message database, no
-Matrix data. The `proxy` is per-account and forwarded to the server, which
-applies it to that account's homeserver traffic (overriding the server-wide
+Matrix data. The `proxy` is per-profile and forwarded to the server, which
+applies it to that profile's homeserver traffic (overriding the server-wide
 default). Use `off` for a direct connection.
 
 ```bash
-# Create / save accounts (each with its own proxy):
-progressive-terminal register --name alice --homeserver https://a.org \
+# Profiles (containers for accounts + settings):
+progressive-terminal profile create work --proxy socks5://127.0.0.1:9050
+progressive-terminal profile create personal
+progressive-terminal profile enable work | disable work   # >=1 stays enabled
+progressive-terminal profile current personal              # active profile
+progressive-terminal profile list
+
+# Accounts live inside profiles:
+progressive-terminal register --profile personal --homeserver https://a.org \
     --username alice --password secret --proxy off
-progressive-terminal session  --name bob   --homeserver https://b.org \
+progressive-terminal session  --profile bob --homeserver https://b.org \
     --user @bob:b.org --token TOK --device DEV --proxy socks5://127.0.0.1:9050
 
-progressive-terminal accounts          # list, '*' marks the active one
-progressive-terminal use alice         # switch active account
-progressive-terminal render --static   # uses the active account
-progressive-terminal render --account bob   # or pick one explicitly
-progressive-terminal logout --account bob    # forget one
-progressive-terminal logout --all           # forget everything
+progressive-terminal render --static          # uses the active profile
+progressive-terminal render --profile bob     # or pick one explicitly
+progressive-terminal use personal              # switch active profile
+progressive-terminal logout [--profile bob]   # forget an account (keep profile)
+
+# Drive the relay's proxy (the full client's `proxy on/off`) over HTTP:
+progressive-terminal proxy on tor
+progressive-terminal proxy off
+progressive-terminal proxy status             # local profile + relay status
 ```
 
-`render` / `input` / `sync` default to the active account unless `--account`
-is given. The active account's host also acts as a `PROGTERM_HOST` fallback.
+`render` / `input` / `sync` default to the active profile unless `--profile`
+is given. The active profile's host also acts as a `PROGTERM_HOST` fallback.
 
 The server side (`progressive-cli serve --ttys`) still holds all real state; by
 default its database is in-memory (`:memory:`), so a session lives in the
@@ -100,7 +111,7 @@ progressive-terminal render --no-scan   # never scan; require an explicit host
 ```
 
 The scan only probes localhost, so it is fast and safe; a found relay is
-remembered per-account after the first successful `register`/`session`.
+remembered per-profile after the first successful `register`/`session`.
 
 ## Usage
 

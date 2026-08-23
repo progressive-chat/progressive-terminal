@@ -23,10 +23,10 @@ std::string base_dir() {
     return ".progressive-terminal";
 #endif
 }
-std::string accounts_dir() { return base_dir() + "/accounts"; }
+std::string profiles_dir() { return base_dir() + "/profiles"; }
 std::string current_file() { return base_dir() + "/current"; }
-std::string account_path(const std::string& name) {
-    return accounts_dir() + "/" + name;
+std::string profile_path(const std::string& name) {
+    return profiles_dir() + "/" + name;
 }
 
 void ensure_dirs() {
@@ -35,7 +35,7 @@ void ensure_dirs() {
     mkdir(home.c_str(), 0700);
     mkdir((home + "/.config").c_str(), 0700);
     mkdir(base_dir().c_str(), 0700);
-    mkdir(accounts_dir().c_str(), 0700);
+    mkdir(profiles_dir().c_str(), 0700);
 #endif
 }
 
@@ -45,35 +45,62 @@ std::string read_file(const std::string& p) {
     std::stringstream ss; ss << f.rdbuf();
     return ss.str();
 }
-
 void write_file(const std::string& p, const std::string& s) {
     std::ofstream f(p, std::ios::trunc);
     if (f) f << s;
 }
+
+bool any_enabled() {
+    for (auto& p : list_profiles()) if (p.enabled) return true;
+    return false;
+}
+
+void ensure_at_least_one_enabled(const std::string& preferred) {
+    if (any_enabled()) return;
+    Profile p;
+    if (load_profile(preferred, p)) { p.enabled = true; save_profile(p); }
+    else if (!list_profiles().empty()) {
+        p = list_profiles().front(); p.enabled = true; save_profile(p);
+    }
+}
 }  // namespace
 
-bool save_account(const Account& a) {
-    if (a.name.empty()) return false;
+bool save_profile(const Profile& p) {
+    if (p.name.empty()) return false;
     ensure_dirs();
     const std::string body = "{"
-        "\"host\":"    + pt::json::str(a.host) +
-        ",\"session\":" + pt::json::str(a.session) +
-        ",\"proxy\":"   + pt::json::str(a.proxy) + "}";
-    write_file(account_path(a.name), body);
-    set_current(a.name);
+        "\"enabled\":" + std::string(p.enabled ? "true" : "false") +
+        ",\"proxy\":"    + pt::json::str(p.proxy) +
+        ",\"host\":"     + pt::json::str(p.host) +
+        ",\"session\":"  + pt::json::str(p.session) + "}";
+    write_file(profile_path(p.name), body);
+    ensure_at_least_one_enabled(p.name);
+    // Keep current pointing at an enabled profile.
+    Profile cur;
+    if (current_name().empty() || !load_profile(current_name(), cur)) {
+        Profile en;
+        if (load_profile("", en)) set_current(en.name);
+    }
     return true;
 }
 
-bool load_account(std::string name, Account& out) {
+bool load_profile(std::string name, Profile& out) {
     if (name.empty()) name = current_name();
+    if (name.empty()) {
+        // pick first enabled profile
+        for (auto& p : list_profiles()) if (p.enabled) { name = p.name; break; }
+    }
     if (name.empty()) return false;
-    const std::string content = read_file(account_path(name));
+    const std::string content = read_file(profile_path(name));
     if (content.empty()) return false;
     out.name = name;
+    std::string en;
+    if (pt::json::get_string(content, "enabled", en))
+        out.enabled = (en == "true");
+    pt::json::get_string(content, "proxy", out.proxy);
     pt::json::get_string(content, "host", out.host);
     pt::json::get_string(content, "session", out.session);
-    pt::json::get_string(content, "proxy", out.proxy);
-    return !out.session.empty();
+    return true;
 }
 
 std::string current_name() {
@@ -83,50 +110,78 @@ std::string current_name() {
 }
 
 bool set_current(const std::string& name) {
+    Profile p;
+    if (!load_profile(name, p)) return false;
+    if (!p.enabled) return false;
     ensure_dirs();
     write_file(current_file(), name);
     return true;
 }
 
-std::vector<Account> list_accounts() {
-    std::vector<Account> out;
+std::vector<Profile> list_profiles() {
+    std::vector<Profile> out;
 #ifdef __unix__
-    DIR* d = opendir(accounts_dir().c_str());
+    DIR* d = opendir(profiles_dir().c_str());
     if (!d) return out;
     struct dirent* e;
     while ((e = readdir(d)) != nullptr) {
         std::string n = e->d_name;
         if (n == "." || n == "..") continue;
-        Account a;
-        if (load_account(n, a)) out.push_back(a);
+        Profile p;
+        if (load_profile(n, p)) out.push_back(p);
     }
     closedir(d);
 #endif
     return out;
 }
 
-bool remove_account(std::string name) {
+bool set_enabled(const std::string& name, bool on) {
+    Profile p;
+    if (!load_profile(name, p)) return false;
+    if (!on && p.enabled) {
+        // count enabled others
+        int n = 0;
+        for (auto& q : list_profiles()) if (q.enabled && q.name != name) n++;
+        if (n == 0) return false;  // refuse: would leave zero enabled
+    }
+    p.enabled = on;
+    save_profile(p);
+    return true;
+}
+
+bool remove_profile(std::string name) {
     if (name.empty()) name = current_name();
     if (name.empty()) return false;
-    const std::string p = account_path(name);
-    bool removed = (std::remove(p.c_str()) == 0);
-    if (removed && current_name() == name) {
-        // pick another account as current, else clear
-        auto all = list_accounts();
-        set_current(all.empty() ? "" : all.front().name);
+    Profile p;
+    if (!load_profile(name, p)) return false;
+    if (p.enabled) {
+        int n = 0;
+        for (auto& q : list_profiles()) if (q.enabled && q.name != name) n++;
+        if (n == 0) return false;  // refuse: last enabled
     }
-    return removed;
+    std::remove(profile_path(name).c_str());
+    if (current_name() == name) {
+        for (auto& q : list_profiles()) if (q.enabled) { set_current(q.name); break; }
+    }
+    return true;
 }
 
 bool clear_all() {
-    bool ok = true;
+    for (auto& p : list_profiles()) std::remove(profile_path(p.name).c_str());
+    std::remove(current_file().c_str());
 #ifdef __unix__
-    for (auto& a : list_accounts()) std::remove(account_path(a.name).c_str());
-    ok = (std::remove(current_file().c_str()) == 0) || ok;
-    rmdir(accounts_dir().c_str());
+    rmdir(profiles_dir().c_str());
     rmdir(base_dir().c_str());
 #endif
-    return ok;
+    return true;
+}
+
+void ensure_default_profile() {
+    if (!list_profiles().empty()) return;
+    Profile p;
+    p.name = "default";
+    p.enabled = true;
+    save_profile(p);
 }
 
 }}  // namespace pt::store

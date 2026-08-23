@@ -4,36 +4,39 @@
 
 namespace pt { namespace store {
 
-// Multi-account local cache. Each account is a separate JSON file under
-//   $HOME/.config/progressive-terminal/accounts/<name>
-// and the "active" one is tracked in .../current. This is the ONLY local
-// state progressive-terminal keeps — no message DB, no Matrix data.
-struct Account {
+// A profile is a container for connection settings and an OPTIONAL account
+// (session). It can exist with no account (just proxy/host config). At least
+// one profile is always enabled.
+struct Profile {
     std::string name;
+    bool enabled = true;
+    std::string proxy;    // socks5://[u:p@]h:p | http://h:p | off | "" (server default)
     std::string host;
     std::string session;
-    std::string proxy;   // socks5://.. | http://.. | off | "" (server default)
-    bool valid() const { return !session.empty(); }
+    bool has_account() const { return !session.empty(); }
 };
 
-// Upsert account `a.name` (creating the file) and make it the current one.
-bool save_account(const Account& a);
+// Upsert profile `p.name`. Enforces the "at least one enabled" invariant.
+bool save_profile(const Profile& p);
 
-// Load account `name`; when `name` is empty, load the current account.
-// Returns false if not found.
-bool load_account(std::string name, Account& out);
+// Load profile `name`; when empty, load the current (enabled) profile.
+// Returns false if none found.
+bool load_profile(std::string name, Profile& out);
 
 std::string current_name();
-bool set_current(const std::string& name);
+bool set_current(const std::string& name);   // must be enabled
 
-// All known accounts (may include ones without a session yet).
-std::vector<Account> list_accounts();
+std::vector<Profile> list_profiles();
 
-// Remove account `name` (or the current one when empty). Returns true if a
-// file was removed.
-bool remove_account(std::string name);
+// Enable/disable a profile. Refuses to disable the last enabled one.
+bool set_enabled(const std::string& name, bool on);
 
-// Wipe the whole cache directory.
+// Remove a profile. Refuses if it is the only enabled one.
+bool remove_profile(std::string name);
+
 bool clear_all();
+
+// Create a default enabled profile ("default") if no profiles exist.
+void ensure_default_profile();
 
 }}  // namespace pt::store

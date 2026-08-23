@@ -15,4 +15,7 @@ struct HttpResult {
 // Returns the HTTP status and response body.
 HttpResult http_post_json(const std::string& url, const std::string& body);
 
+// GET `url` (used to query relay status). Returns the HTTP status and body.
+HttpResult http_get_json(const std::string& url);
+
 }  // namespace pt

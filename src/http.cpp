@@ -36,4 +36,18 @@ HttpResult http_post_json(const std::string& url, const std::string& body) {
     return res;
 }
 
+HttpResult http_get_json(const std::string& url) {
+    HttpResult res;
+    CURL* c = curl_easy_init();
+    if (!c) return res;
+    curl_easy_setopt(c, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, &res.body);
+    res.code = curl_easy_perform(c);
+    if (res.code == CURLE_OK)
+        curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &res.http_status);
+    curl_easy_cleanup(c);
+    return res;
+}
+
 }  // namespace pt
