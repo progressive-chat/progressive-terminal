@@ -2,6 +2,12 @@
 
 Lightweight C++ client for **progressive-chat (cli edition)**.
 
+**Why it exists:** one of the main goals is to use your chat **from any remote
+machine while your account database stays at home**. The full client owns all
+data; a relay started next to it holds sessions **only in RAM** (`:memory:`).
+So the worst case is your account data existing *temporarily, in the memory of
+the remote client* — never persisted on the machine you are sitting at.
+
 It is a **smart `curl` wrapper**: it never embeds the Matrix stack. Instead it
 talks over plain HTTP to a `progressive-cli serve --ttys` relay and renders the
 server's ASCII UI on your terminal. That keeps the local binary small and fast
