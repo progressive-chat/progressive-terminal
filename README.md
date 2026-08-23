@@ -7,6 +7,7 @@ stores nothing anywhere.
 
 ```
 progterm <path> [json-body]     # POST when a body is given, GET otherwise
+progterm render <session> [room]   # static frame, auto-sized to your tty
 ```
 
 Environment:
@@ -34,9 +35,8 @@ S=$(progterm api/ttys/register "$(cat reg.json)" | jq -r .session)
 # one input line
 progterm api/ttys/input "{\"session\":\"$S\",\"input\":\"hello\"}"
 
-# static ASCII frame, sized by your shell's COLUMNS/LINES
-progterm api/ttys/render "{\"session\":\"$S\",\"term\":{\"cols\":$COLUMNS,\"rows\":$LINES},\"view\":\"static\"}" \
-  | jq -r .frame
+# static ASCII frame, sized automatically to your terminal
+progterm render "$S" | jq -r .frame
 ```
 
 ## Build

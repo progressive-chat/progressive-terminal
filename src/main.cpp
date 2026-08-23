@@ -20,6 +20,11 @@
 #include <string>
 #include <cstdlib>
 
+#ifdef __unix__
+#include <unistd.h>
+#include <sys/ioctl.h>
+#endif
+
 namespace {
 
 std::string host_from() {
@@ -33,11 +38,43 @@ std::string bearer_from() {
     return e ? e : "";
 }
 
+// Terminal size: TIOCGWINSZ when attached to a tty, then COLUMNS/LINES,
+// then 80x24. The one piece of LOCAL data a dumb pipe still must supply.
+void term_size(int& cols, int& rows) {
+    cols = 80; rows = 24;
+#ifdef TIOCGWINSZ
+    struct winsize w {};
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0 && w.ws_col > 0 && w.ws_row > 0) {
+        cols = static_cast<int>(w.ws_col);
+        rows = static_cast<int>(w.ws_row);
+        return;
+    }
+#endif
+    if (const char* c = std::getenv("COLUMNS"))
+        if (const int v = std::atoi(c)) cols = v;
+    if (const char* r = std::getenv("LINES"))
+        if (const int v = std::atoi(r)) rows = v;
+}
+
+// progterm render <session> [room] — one static ASCII frame, sized to the
+// local terminal. A positional verb, not an option: no flags exist here.
+std::string render_body(int argc, char** argv) {
+    int c, r;
+    term_size(c, r);
+    std::string b = "{\"session\":\"" + std::string(argv[2]) + "\"" +
+                    ",\"term\":{\"cols\":" + std::to_string(c) +
+                    ",\"rows\":" + std::to_string(r) + "}";
+    if (argc >= 4) b += ",\"room\":\"" + std::string(argv[3]) + "\"";
+    return b + ",\"view\":\"static\"}";
+}
+
 void usage() {
     std::cerr << "usage: progterm <path> [json-body]\n"
                  "env:   PROGTERM_HOST  PROGTERM_TOKEN\n"
                  "example: progterm api/ttys/proxy "
-              << "'{\"action\":\"on\",\"preset\":\"tor\"}'\n";
+              << "'{\"action\":\"on\",\"preset\":\"tor\"}'\n"
+              << "         progterm render <session> [room]   # static frame, "
+              "auto-sized\n";
 }
 
 }  // namespace
@@ -46,7 +83,14 @@ int main(int argc, char** argv) {
     if (argc < 2) { usage(); return 1; }
     std::string path = argv[1];
     if (!path.empty() && path[0] == '/') path.erase(0, 1);
-    const std::string body = argc >= 3 ? argv[2] : "";
+    std::string body;
+    if (path == "render") {
+        if (argc < 3) { usage(); return 1; }
+        body = render_body(argc, argv);           // sized locally
+        path = "api/ttys/render";
+    } else if (argc >= 3) {
+        body = argv[2];                            // verbatim pipe
+    }
     const std::string url = host_from() + "/" + path;
 
     const pt::HttpResult r = body.empty()
