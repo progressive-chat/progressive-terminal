@@ -10,7 +10,8 @@ std::string request_frame(const std::string& host,
                           const std::string& session,
                           const std::string& room,
                           bool static_only,
-                          int cols, int rows) {
+                          int cols, int rows,
+                          const std::string& bearer) {
     if (session.empty())
         return "error: --session is required (register or `session` first)";
 
@@ -32,7 +33,7 @@ std::string request_frame(const std::string& host,
     body += "}";
 
     const std::string url = host + "/api/ttys/render";
-    HttpResult r = http_post_json(url, body);
+    HttpResult r = http_post_json(url, body, bearer);
     if (!r.ok()) {
         std::string err;
         if (json::get_string(r.body, "error", err))

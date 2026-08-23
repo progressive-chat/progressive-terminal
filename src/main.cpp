@@ -59,6 +59,15 @@ std::string host_from(const Args& a) {
     return "http://127.0.0.1:29325";
 }
 
+// Relay auth token: --relay-token wins, else $PROGTERM_TOKEN. Sent as an
+// "Authorization: Bearer" header when non-empty (matches the relay's
+// `serve --ttys --token` option).
+std::string bearer_from(const Args& a) {
+    if (a.opt.count("relay-token")) return get(a, "relay-token");
+    if (const char* e = std::getenv("PROGTERM_TOKEN")) return e;
+    return "";
+}
+
 // Resolve the active profile: explicit --profile wins, else the current one.
 // --host / --proxy on the command line override the stored values.
 pt::store::Profile resolve_profile(const Args& a) {
@@ -88,8 +97,8 @@ void usage_render() {
 
 void usage_register() {
     std::cerr << "Usage: progressive-terminal register [--profile <n>] "
-                 "[--name <acc>] --homeserver <url> --username <u> --password <p> "
-                 "[--reg-token <t>] [--proxy <spec>]\n"
+                 "--homeserver <url> --username <u> --password <p> "
+                 "[--reg-token <t>] [--proxy <spec>] [--relay-token <t>]\n"
                  "  --profile <n>  store the account in this profile (default: active)\n"
                  "  --proxy <spec> socks5://[u:p@]h:p | http://h:p | off "
                  "(per-profile proxy; overrides server default)\n";
@@ -97,8 +106,8 @@ void usage_register() {
 
 void usage_session() {
     std::cerr << "Usage: progressive-terminal session [--profile <n>] "
-                 "[--name <acc>] --homeserver <url> --user <@id> --token <t> "
-                 "--device <d> [--proxy <spec>]\n"
+                 "--homeserver <url> --user <@id> --token <t> "
+                 "--device <d> [--proxy <spec>] [--relay-token <t>]\n"
                  "  --profile <n>  store the account in this profile\n"
                  "  --proxy <spec> per-profile proxy (socks5/http/off)\n";
 }
@@ -108,7 +117,9 @@ void usage_proxy() {
                  "  proxy on  <preset>   enable a server-side proxy preset "
                  "(e.g. tor, i2p)\n"
                  "  proxy off            disable the server-side proxy\n"
-                 "  proxy status         show local profile proxy + relay status\n";
+                 "  proxy status         show local profile proxy + relay status\n"
+                 "  Auth: --relay-token <t> or $PROGTERM_TOKEN when the relay "
+                 "runs with --token\n";
 }
 
 void usage_profile() {
@@ -134,7 +145,8 @@ int cmd_register(Args& a) {
         ",\"password\":"   + pt::json::str(a.opt["password"]) +
         ",\"reg_token\":"  + pt::json::str(a.opt["reg-token"]) +
         ",\"proxy\":"      + pt::json::str(get(a, "proxy")) + "}";
-    pt::HttpResult r = pt::http_post_json(host + "/api/ttys/register", body);
+    pt::HttpResult r = pt::http_post_json(host + "/api/ttys/register", body,
+                                          bearer_from(a));
     if (!r.ok()) {
         std::string err;
         if (pt::json::get_string(r.body, "error", err)) std::cerr << "error: " << err << "\n";
@@ -167,7 +179,8 @@ int cmd_session(Args& a) {
             ",\"device_id\":"  + pt::json::str(a.opt["device"]) +
             ",\"proxy\":"      + pt::json::str(get(a, "proxy")) +
         "}}";
-    pt::HttpResult r = pt::http_post_json(host + "/api/ttys/session", body);
+    pt::HttpResult r = pt::http_post_json(host + "/api/ttys/session", body,
+                                          bearer_from(a));
     if (!r.ok()) {
         std::string err;
         if (pt::json::get_string(r.body, "error", err)) std::cerr << "error: " << err << "\n";
@@ -195,7 +208,7 @@ int cmd_input(Args& a) {
     const std::string body = "{"
         "\"session\":" + pt::json::str(p.session) +
         ",\"input\":"   + pt::json::str(a.opt["text"]) + "}";
-    pt::http_post_json(p.host + "/api/ttys/input", body);
+    pt::http_post_json(p.host + "/api/ttys/input", body, bearer_from(a));
     return 0;
 }
 
@@ -207,7 +220,8 @@ int cmd_sync(Args& a) {
     const pt::store::Profile p = resolve_profile(a);
     if (p.session.empty()) { std::cerr << "error: no session (register into a profile first)\n"; return 1; }
     const std::string body = "{\"session\":" + pt::json::str(p.session) + "}";
-    pt::HttpResult r = pt::http_post_json(p.host + "/api/ttys/sync", body);
+    pt::HttpResult r = pt::http_post_json(p.host + "/api/ttys/sync", body,
+                                          bearer_from(a));
     std::cout << r.body << "\n";
     return 0;
 }
@@ -222,12 +236,13 @@ int cmd_render(Args& a) {
 
 #ifdef PROGTERM_TUI
     if (a.opt.count("tui")) {
-        return pt::run_tui(p.host, p.session, get(a, "room"));
+        return pt::run_tui(p.host, p.session, get(a, "room"), bearer_from(a));
     }
 #endif
 
     const std::string frame = pt::request_frame(p.host, p.session,
-                                                get(a, "room"), static_only, cols, rows);
+                                                get(a, "room"), static_only,
+                                                cols, rows, bearer_from(a));
     if (frame.rfind("error:", 0) == 0) { std::cerr << frame << "\n"; return 1; }
     std::cout << frame;
     return 0;
@@ -348,13 +363,14 @@ int cmd_proxy(Args& a) {
         if (preset.empty()) { std::cerr << "error: usage: proxy on <preset>\n"; return 1; }
         pt::HttpResult r = pt::http_post_json(
             host + "/api/ttys/proxy",
-            "{\"action\":\"on\",\"preset\":" + pt::json::str(preset) + "}");
+            "{\"action\":\"on\",\"preset\":" + pt::json::str(preset) + "}",
+            bearer_from(a));
         std::cout << r.body << "\n";
         return 0;
     }
     if (sub == "off") {
         pt::HttpResult r = pt::http_post_json(
-            host + "/api/ttys/proxy", "{\"action\":\"off\"}");
+            host + "/api/ttys/proxy", "{\"action\":\"off\"}", bearer_from(a));
         std::cout << r.body << "\n";
         return 0;
     }
@@ -363,8 +379,12 @@ int cmd_proxy(Args& a) {
         pt::store::load_profile("", p);
         std::cout << "local profile : " << (p.name.empty() ? "(none)" : p.name)
                   << "  proxy=" << (p.proxy.empty() ? "(server default)" : p.proxy) << "\n";
-        pt::HttpResult r = pt::http_get_json(host + "/api/ttys/proxy");
-        if (r.http_status == 200) std::cout << "relay proxy   : " << r.body << "\n";
+        pt::HttpResult r = pt::http_get_json(host + "/api/ttys/proxy",
+                                             bearer_from(a));
+        if (r.http_status == 401)
+            std::cout << "relay proxy   : (unauthorized — pass --relay-token "
+                         "or set $PROGTERM_TOKEN)\n";
+        else if (r.http_status == 200) std::cout << "relay proxy   : " << r.body << "\n";
         else std::cout << "relay proxy   : (relay does not expose proxy status)\n";
         return 0;
     }
@@ -392,9 +412,11 @@ void usage() {
         "  --no-scan        don't auto-scan nearby ports for the relay\n"
         "  --scan-base <p>  base port for scan (default 29325)\n"
         "  --scan-range <n> scan base±n ports (default 10)\n"
-        "  --profile <name> pick a profile (render/input/sync); default=active\n"
-        "  --name <name>    label an account on register/session (default)\n"
+        "  --profile <name> pick a profile (register/session/render/input/sync);\n"
+        "                   default=active\n"
         "  --proxy <spec>   per-profile proxy: socks5://[u:p@]h:p | http://h:p | off\n"
+        "  --relay-token <t> relay auth token (or $PROGTERM_TOKEN), sent as\n"
+        "                   'Authorization: Bearer' — matches serve --ttys --token\n"
         "  -h, --help       this help\n\n"
         "Profiles: each profile is a container with optional account + proxy. A\n"
         "  profile may exist with no account. At least one profile is always\n"

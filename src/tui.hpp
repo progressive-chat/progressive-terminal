@@ -8,6 +8,7 @@ namespace pt {
 // to the server, and repeats. Re-renders on SIGWINCH (terminal resize).
 int run_tui(const std::string& host,
             const std::string& session,
-            const std::string& room);
+            const std::string& room,
+            const std::string& bearer = "");
 
 }  // namespace pt

@@ -24,7 +24,8 @@ namespace pt {
 
 int run_tui(const std::string& host,
             const std::string& session,
-            const std::string& room) {
+            const std::string& room,
+            const std::string& bearer) {
 #ifdef __unix__
     struct sigaction sa {};
     std::memset(&sa, 0, sizeof(sa));
@@ -49,7 +50,7 @@ int run_tui(const std::string& host,
         const std::string body = "{"
             "\"session\":" + json::str(session) +
             ",\"input\":" + json::str(line) + "}";
-        http_post_json(host + "/api/ttys/input", body);
+        http_post_json(host + "/api/ttys/input", body, bearer);
     }
     return 0;
 }

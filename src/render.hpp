@@ -13,7 +13,8 @@ std::string request_frame(const std::string& host,
                           const std::string& session,
                           const std::string& room,
                           bool static_only,
-                          int cols = 0, int rows = 0);
+                          int cols = 0, int rows = 0,
+                          const std::string& bearer = "");
 
 // Print usage for the `render` subcommand.
 void usage_render();

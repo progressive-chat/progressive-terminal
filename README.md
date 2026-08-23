@@ -82,6 +82,20 @@ progressive-terminal proxy status             # local profile + relay status
 `render` / `input` / `sync` default to the active profile unless `--profile`
 is given. The active profile's host also acts as a `PROGTERM_HOST` fallback.
 
+## Relay authentication
+
+When the relay runs with `serve --ttys --token <t>`, every command accepts
+`--relay-token <t>` (or the `PROGTERM_TOKEN` environment variable) and sends
+it as an `Authorization: Bearer` header:
+
+```bash
+progressive-terminal proxy status --relay-token secret
+PROGTERM_TOKEN=secret progressive-terminal render --static
+```
+
+Without a token (relay started without `--token`) no header is sent and no
+auth is required.
+
 The server side (`progressive-cli serve --ttys`) still holds all real state; by
 default its database is in-memory (`:memory:`), so a session lives in the
 server's RAM and is lost when that server restarts.
