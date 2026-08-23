@@ -140,8 +140,7 @@ progressive-terminal session \
 # 3. Render the ASCII UI (auto-detects your terminal size):
 progressive-terminal render --session "@a2:mock.local" --static
 
-# 4. Interactive mode (only in a BUILD_TUI build):
-progressive-terminal render --session "@a2:mock.local" --tui
+# 4. Interactive remote terminal: dumb branch, `progterm term <session>`.
 ```
 
 ## Server side
