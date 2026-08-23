@@ -14,10 +14,20 @@ progterm sync [session] | proxy [on <preset>|off]
 progterm <path> [json-body]                       # raw pipe (everything else)
 ```
 
-`<session>` arguments are OPTIONAL: the client remembers the latest one in
-`~/.config/progterm-lite/session` (override: `$PROGTERM_SESSION`,
-`$PROGTERM_SESSION_FILE`). `register` and `last` refresh that memory
-automatically.
+`<session>` arguments are OPTIONAL: the active PROFILE's session is used
+(override: `$PROGTERM_SESSION`, `$PROGTERM_SESSION_FILE`). `register`
+and `last` write that memory automatically.
+
+### Profile import / export
+
+```bash
+progterm-lite profile export phone.bundle   # chmod 600 — carries sessions!
+progterm-lite profile import phone.bundle    # upsert by name, merge-safe
+```
+
+The bundle is a plain text snapshot of every profile plus the `current`
+pointer — human-readable, diffable, and byte-stable on round-trip. It
+carries session ids, so treat it like a secret.
 
 **Offline store-and-forward:** set `PROGTERM_OUTBOX=<file>` and any POST
 that cannot reach the relay is spooled there, then auto-delivered on the

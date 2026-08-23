@@ -258,6 +258,70 @@ int cmd_profile(int argc, char** argv) {
         std::cout << "profile " << name << " removed\n";
         return 0;
     }
+    if (sub == "export" || sub == "import") {
+        const std::string file = nm(3);
+        if (file.empty()) {
+            std::cerr << "usage: progterm profile " << sub << " <file>\n";
+            return 1;
+        }
+        const auto ps = pt::store::list_profiles();
+        if (sub == "export") {
+            if (ps.empty()) { std::cerr << "nothing to export\n"; return 1; }
+            std::ofstream f(file, std::ios::trunc);
+            f << "current " << pt::store::current_name() << "\n";
+            for (const auto& p : ps)
+                f << "profile " << p.name << "\n"
+                  << "enabled " << (p.enabled ? "true" : "false") << "\n"
+                  << "proxy "   << p.proxy  << "\n"
+                  << "host "    << p.host   << "\n"
+                  << "session " << p.session << "\n";
+            f.close();
+#ifdef __unix__
+            chmod(file.c_str(), 0600);   // the bundle carries session ids
+#endif
+            std::cout << "exported " << ps.size() << " profile(s) -> "
+                      << file << "\n";
+            return 0;
+        }
+        // import: upsert by name; everything absent stays untouched
+        std::ifstream f(file);
+        if (!f) { std::cerr << "cannot open " << file << "\n"; return 1; }
+        std::string line, cur_name;
+        pt::store::Profile cur;
+        bool have = false;
+        int n = 0;
+        std::string want_current;
+        auto commit = [&] {
+            if (!have) return;
+            pt::store::save_profile(cur);
+            ++n;
+            have = false;
+        };
+        while (std::getline(f, line)) {
+            if (line.rfind("profile ", 0) == 0) {
+                commit();
+                cur = pt::store::Profile();
+                cur.name = line.substr(8);
+                cur.enabled = true;
+                have = true;
+            } else if (line.rfind("current ", 0) == 0) {
+                want_current = line.substr(8);
+            } else if (have && !line.empty()) {
+                const size_t sp = line.find(' ');
+                if (sp == std::string::npos) continue;
+                const std::string k = line.substr(0, sp);
+                const std::string v = line.substr(sp + 1);
+                if (k == "enabled") cur.enabled = (v != "false");
+                else if (k == "proxy")  cur.proxy  = v;
+                else if (k == "host")   cur.host   = v;
+                else if (k == "session")cur.session= v;
+            }
+        }
+        commit();
+        if (!want_current.empty()) pt::store::set_current(want_current);
+        std::cout << "imported " << n << " profile(s)\n";
+        return 0;
+    }
     std::cerr << "unknown profile action\n";
     return 1;
 }
