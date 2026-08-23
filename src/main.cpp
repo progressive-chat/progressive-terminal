@@ -439,14 +439,14 @@ int cmd_proxy(const std::string& host, const std::string& bearer, int argc,
 }
 
 void usage() {
-    std::cerr << "progterm-lite — special proxy to the full client\n\n"
-              << "verbs: register <hs> <user> <pass> [profile] | last |\n"
-              << "  sync|render|term|logout [session|profile] [room] |\n"
-              << "  proxy [on <preset>|off] | profile create|set|list|enable|\n"
-              << "  disable|current|delete|export|import <file> | raw <path> [body]\n"
-              << "anything else = a LINE for the full client's REPL:\n"
-              << "  progterm-lite hello          # chat text\n"
-              << "  progterm-lite /open #general # its own command\n";
+    // The face of the client is the face of the FULL client: fetch its
+    // catalog from the relay instead of storing a copy here.
+    const pt::HttpResult r = pt::http_get_plain(
+        host_from() + "/api/ttys/usage", bearer_from());
+    if (r.http_status == 200) { std::cout << r.body << std::flush; return; }
+    std::cout << "progterm-lite — special proxy to the full client\n"
+                 "relay unreachable — start 'progressive-cli serve --ttys'"
+                 " or set PROGTERM_HOST\n";
 }
 
 }  // namespace

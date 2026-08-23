@@ -61,4 +61,8 @@ HttpResult http_get_json(const std::string& url, const std::string& bearer) {
     return send(url, "", bearer, "");
 }
 
+HttpResult http_get_plain(const std::string& url, const std::string& bearer) {
+    return send(url, "", bearer, "text/plain");
+}
+
 }  // namespace pt

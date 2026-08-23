@@ -25,4 +25,7 @@ HttpResult http_post_plain(const std::string& url, const std::string& body,
 // GET `url` (used to query relay status). Returns the HTTP status and body.
 HttpResult http_get_json(const std::string& url, const std::string& bearer = "");
 
+// GET asking the relay for a plain-text body ("Accept: text/plain").
+HttpResult http_get_plain(const std::string& url, const std::string& bearer = "");
+
 }  // namespace pt
