@@ -4,7 +4,6 @@
 #include "render.hpp"
 #include "store.hpp"
 #include "discover.hpp"
-#include "tui.hpp"
 #include <iostream>
 #include <map>
 #include <string>
@@ -23,6 +22,11 @@ const std::string& get(const Args& a, const std::string& k) {
     static const std::string empty;
     auto it = a.opt.find(k);
     return it == a.opt.end() ? empty : it->second;
+}
+
+// int-valued --flag with fallback (scan window, forced cols/rows).
+int num_opt(const Args& a, const char* k, int def) {
+    return a.opt.count(k) ? std::stoi(get(a, k)) : def;
 }
 
 Args parse(int argc, char** argv) {
@@ -51,9 +55,8 @@ std::string host_from(const Args& a) {
     pt::store::Profile p;
     if (pt::store::load_profile("", p) && !p.host.empty()) return p.host;
     if (!a.opt.count("no-scan")) {
-        int base = 29325, range = 10;
-        if (a.opt.count("scan-base"))  base  = std::stoi(get(a, "scan-base"));
-        if (a.opt.count("scan-range")) range = std::stoi(get(a, "scan-range"));
+        const int base  = num_opt(a, "scan-base", 29325);
+        const int range = num_opt(a, "scan-range", 10);
         const std::string found = pt::discover_ttys_host(base, range);
         if (!found.empty()) return found;
     }
@@ -165,47 +168,12 @@ int cmd_sync(Args& a) {
 int cmd_render(Args& a) {
     pt::store::Profile p;
     if (!need_session(a, p)) return 1;
-#ifdef PROGTERM_TUI
-    if (a.opt.count("tui"))
-        return pt::run_tui(p.host, p.session, get(a, "room"), bearer_from(a));
-#endif
     const std::string frame = pt::request_frame(
         p.host, p.session, get(a, "room"), a.opt.count("static") > 0,
-        a.opt.count("cols") ? std::stoi(get(a, "cols")) : 0,
-        a.opt.count("rows") ? std::stoi(get(a, "rows")) : 0,
-        bearer_from(a));
+        num_opt(a, "cols", 0), num_opt(a, "rows", 0), bearer_from(a));
     if (frame.rfind("error:", 0) == 0) { std::cerr << frame << "\n"; return 1; }
     std::cout << frame;
     return 0;
-}
-
-// Make <name> the active profile (must exist and be enabled). Shared by
-// `use` and `profile current`.
-int switch_current(const std::string& name) {
-    if (!pt::store::set_current(name)) {
-        std::cerr << "error: unknown or disabled profile '" << name << "'\n";
-        return 1;
-    }
-    std::cout << "active profile: " << name << "\n";
-    return 0;
-}
-
-int cmd_use(Args& a) {
-    std::string name = get(a, "profile");
-    if (name.empty() && !a.pos.empty()) name = a.pos.front();
-    if (name.empty()) { std::cerr << "error: usage: use <name>\n"; return 1; }
-    return switch_current(name);
-}
-
-void print_profiles() {
-    std::cout << "profiles:\n";
-    const std::string cur = pt::store::current_name();
-    for (const auto& p : pt::store::list_profiles())
-        std::cout << (p.name == cur ? "* " : "  ") << p.name
-                  << (p.enabled ? "  [enabled]" : "  [disabled]")
-                  << "  proxy=" << (p.proxy.empty() ? "(server default)" : p.proxy)
-                  << "  session=" << (p.session.empty() ? "(none)" : p.session)
-                  << "\n";
 }
 
 // Positional profile name for `profile <action> <name>`; errors when absent.
@@ -218,7 +186,17 @@ bool need_name(const Args& a, std::string& name) {
 
 int cmd_profile(Args& a) {
     std::string sub = a.pos.empty() ? "" : a.pos[0];
-    if (sub == "list" || sub.empty()) { print_profiles(); return 0; }
+    if (sub == "list" || sub.empty()) {
+        std::cout << "profiles:\n";
+        const std::string cur = pt::store::current_name();
+        for (const auto& p : pt::store::list_profiles())
+            std::cout << (p.name == cur ? "* " : "  ") << p.name
+                      << (p.enabled ? "  [enabled]" : "  [disabled]")
+                      << "  proxy=" << (p.proxy.empty() ? "(server default)" : p.proxy)
+                      << "  session=" << (p.session.empty() ? "(none)" : p.session)
+                      << "\n";
+        return 0;
+    }
 
     std::string name;
     if (sub == "create" || sub == "set") {
@@ -244,7 +222,12 @@ int cmd_profile(Args& a) {
     }
     if (sub == "current") {
         if (!need_name(a, name)) return 1;
-        return switch_current(name);
+        if (!pt::store::set_current(name)) {
+            std::cerr << "error: unknown or disabled profile '" << name << "'\n";
+            return 1;
+        }
+        std::cout << "active profile: " << name << "\n";
+        return 0;
     }
     if (sub == "delete" || sub == "rm") {
         if (!need_name(a, name)) return 1;
@@ -319,12 +302,11 @@ struct Command {
 };
 
 const Command kCommands[] = {
-    {"render",  "[--profile <n>] [--static] [--room <id>] [--cols/--rows <n>] [--tui]", cmd_render,   nullptr},
+    {"render",  "[--profile <n>] [--static] [--room <id>] [--cols/--rows <n>]", cmd_render,   nullptr},
     {"register","--homeserver <url> --username <u> --password <p> [--reg-token <t>] [--proxy <spec>]",  cmd_register, nullptr},
     {"session", "--homeserver <url> --user <@id> --token <t> --device <d> [--proxy <spec>]",            cmd_session,  nullptr},
     {"input",   "send one input line to the session (--text <line>)",         cmd_input,    nullptr},
     {"sync",    "poll the relay's sync state",                                cmd_sync,     nullptr},
-    {"use",     "switch the active profile (--profile <name> or positional)", cmd_use,      nullptr},
     {"profile", "create|set <name> [--proxy <spec>] | enable|disable | current | delete | list",     cmd_profile,  nullptr},
     {"proxy",   "on <preset> | off | status   (relay-side proxy presets)",          cmd_proxy,    nullptr},
     {"logout",  "forget the account in a profile (keeps profile/proxy)",      cmd_logout,   nullptr},

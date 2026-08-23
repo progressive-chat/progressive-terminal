@@ -29,19 +29,8 @@ cmake -S . -B build
 cmake --build build
 ```
 
-### Compile-time TUI toggle
-
-The interactive TUI lives in `src/tui.cpp` and is compiled in **only** when
-`BUILD_TUI=ON` (the default). Turn it off to build just the static curl wrapper
-— smaller and faster to compile:
-
-```bash
-cmake -S . -B build -DBUILD_TUI=OFF
-cmake --build build
-```
-
-When `BUILD_TUI=OFF`, `progressive-terminal render --tui` is unavailable and the
-binary contains only the request/print path.
+Interactive mode lives in the **`dumb` branch** (`progterm term <session>`),
+not here — this build is purely the command set.
 
 ## Profiles (account containers) and per-profile proxy
 
@@ -76,7 +65,7 @@ progressive-terminal session  --profile bob --homeserver https://b.org \
 
 progressive-terminal render --static          # uses the active profile
 progressive-terminal render --profile bob     # or pick one explicitly
-progressive-terminal use personal              # switch active profile
+progressive-terminal profile current personal  # switch active profile
 progressive-terminal logout [--profile bob]   # forget an account (keep profile)
 
 # Drive the relay's proxy (the full client's `proxy on/off`) over HTTP:

@@ -1,5 +1,4 @@
 #include "store.hpp"
-#include "json.hpp"
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -36,11 +35,11 @@ std::string profile_path(const std::string& name) {
 
 void ensure_dirs() {
 #ifdef __unix__
-    std::string home = getenv("HOME") ? getenv("HOME") : ".";
-    mkdir(home.c_str(), 0700);
-    mkdir((home + "/.config").c_str(), 0700);
-    mkdir(base_dir().c_str(), 0700);
-    mkdir(profiles_dir().c_str(), 0700);
+    std::string d = getenv("HOME") ? getenv("HOME") : ".";
+    for (std::string p : {d + "/.config", base_dir(), profiles_dir()}) {
+        mkdir(p.c_str(), 0700);
+        d = p;
+    }
 #endif
 }
 
@@ -69,14 +68,6 @@ std::string kv_get(const std::string& content, const std::string& key) {
 }
 
 void parse_profile(const std::string& content, Profile& p) {
-    if (!content.empty() && content[0] == '{') {  // legacy JSON: migrate on read
-        std::string en;
-        if (json::get_string(content, "enabled", en)) p.enabled = (en != "false");
-        json::get_string(content, "proxy", p.proxy);
-        json::get_string(content, "host", p.host);
-        json::get_string(content, "session", p.session);
-        return;
-    }
     p.enabled = kv_get(content, "enabled") != "false";
     p.proxy   = kv_get(content, "proxy");
     p.host    = kv_get(content, "host");

@@ -24,5 +24,5 @@ static curl-wrapper, or to compile faster.
 
 - Commit and push each logical change separately, with a clear English summary.
 - Verify the build (`cmake --build build`) before committing.
-- The interactive TUI is gated behind `PROGTERM_TUI`; anything there must stay
-  absent from `BUILD_TUI=OFF` builds.
+- There is no interactive TUI here anymore; it lives on the `dumb`
+  branch (`progterm term`). Keep this branch command-only.
