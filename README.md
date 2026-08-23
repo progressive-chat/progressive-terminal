@@ -75,6 +75,33 @@ The server side (`progressive-cli serve --ttys`) still holds all real state; by
 default its database is in-memory (`:memory:`), so a session lives in the
 server's RAM and is lost when that server restarts.
 
+## Auto-connect (port scan)
+
+When no host is given explicitly (`--host` / `PROGTERM_HOST` / cached account
+host are all absent), the client scans `127.0.0.1` ports near a base port and
+connects to the first `progressive-cli serve --ttys` relay it finds. The scan
+expands outward from the base (base, +1, −1, +2, …) up to `--scan-range`
+(default 10), so a relay running on `29325 ± N` is discovered without any
+configuration:
+
+```bash
+progressive-terminal register --name alice \
+    --homeserver https://example.org --username alice --password secret
+# ^ no --host: auto-scans 127.0.0.1:29315..29335, connects to the relay
+
+progressive-terminal render --static   # also auto-discovers when needed
+```
+
+Tuning / disabling:
+
+```bash
+progressive-terminal register ... --scan-base 29325 --scan-range 20
+progressive-terminal render --no-scan   # never scan; require an explicit host
+```
+
+The scan only probes localhost, so it is fast and safe; a found relay is
+remembered per-account after the first successful `register`/`session`.
+
 ## Usage
 
 ```bash

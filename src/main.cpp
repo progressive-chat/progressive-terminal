@@ -2,6 +2,7 @@
 #include "json.hpp"
 #include "render.hpp"
 #include "store.hpp"
+#include "discover.hpp"
 #include "tui.hpp"
 #include <iostream>
 #include <map>
@@ -35,12 +36,23 @@ Args parse(int argc, char** argv) {
     return a;
 }
 
+// const-safe map lookup (operator[] is non-const). Declared early; defined
+// just below host_from.
+const std::string& get(const Args& a, const std::string& k);
+
 std::string host_from(const Args& a) {
     auto it = a.opt.find("host");
     if (it != a.opt.end()) return it->second;
     if (const char* e = std::getenv("PROGTERM_HOST")) return e;
     pt::store::Account acc;
     if (pt::store::load_account("", acc) && !acc.host.empty()) return acc.host;
+    if (!a.opt.count("no-scan")) {
+        int base = 29325, range = 10;
+        if (a.opt.count("scan-base"))  base  = std::stoi(get(a, "scan-base"));
+        if (a.opt.count("scan-range")) range = std::stoi(get(a, "scan-range"));
+        const std::string found = pt::discover_ttys_host(base, range);
+        if (!found.empty()) return found;
+    }
     return "http://127.0.0.1:29325";
 }
 
@@ -264,10 +276,16 @@ void usage() {
         "  logout     forget an account (or --all)\n\n"
         "Global / per-command:\n"
         "  --host <url>     server endpoint (or $PROGTERM_HOST / cached host)\n"
+        "  --no-scan        don't auto-scan nearby ports for the relay\n"
+        "  --scan-base <p>  base port for scan (default 29325)\n"
+        "  --scan-range <n> scan base±n ports (default 10)\n"
         "  --account <name> pick an account (render/input/sync); default=active\n"
         "  --name <name>    label an account on register/session (default)\n"
         "  --proxy <spec>   per-account proxy: socks5://[u:p@]h:p | http://h:p | off\n"
         "  -h, --help       this help\n\n"
+        "Auto-connect: when no --host / $PROGTERM_HOST / cached host is set,\n"
+        "  the client scans 127.0.0.1 ports around --scan-base (±--scan-range)\n"
+        "  and connects to the first progressive-cli serve --ttys relay found.\n"
         "Multi-account: each register/session stores host+session+proxy under\n"
         "  $HOME/.config/progressive-terminal/accounts/<name>; 'use' selects the\n"
         "  active one. This is the ONLY local state (no message DB). 'logout'\n"
