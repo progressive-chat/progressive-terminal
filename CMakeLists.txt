@@ -22,6 +22,7 @@ add_executable(progressive-terminal
     src/http.cpp
     src/json.cpp
     src/render.cpp
+    src/store.cpp
 )
 
 if(BUILD_TUI)

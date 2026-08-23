@@ -37,6 +37,24 @@ cmake --build build
 When `BUILD_TUI=OFF`, `progressive-terminal render --tui` is unavailable and the
 binary contains only the request/print path.
 
+## Local session cache
+
+This is the **only** state `progressive-terminal` keeps on disk — no message
+database, no Matrix data. On a successful `register` or `session`, the
+`(host, session)` pair is written to:
+
+```
+$HOME/.config/progressive-terminal/session
+```
+
+Later `render` / `input` / `sync` invocations then omit `--session` (and
+`--host`) and reuse the cached values automatically. The cached host is also
+used as a fallback for `PROGTERM_HOST`. Run `logout` to delete the cache file.
+
+The server side (`progressive-cli serve --ttys`) still holds all real state; by
+default its database is in-memory (`:memory:`), so the session itself lives in
+the server's RAM and is lost when that server restarts.
+
 ## Usage
 
 ```bash
