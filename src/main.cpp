@@ -313,29 +313,188 @@ pt::store::Profile target_profile(int argc, char** argv, int idx) {
     return p;
 }
 
-int cmd_register(const std::string& host, const std::string& bearer,
+// Register directly on the homeserver (bypasses the relay) so we can
+// handle UIA challenges interactively. After success, the session id is
+// sent to the relay to create a ttys session.
+int cmd_register(const std::string& relay_host, const std::string& bearer,
                  int argc, char** argv) {
     if (argc < 5) {
-        std::cerr << "usage: progterm-lite register <homeserver> <user>"
-                     " <password> [profile]\n";
+        std::cerr << "usage: register <homeserver> <user> <password> [profile]\n";
         return 1;
     }
+    const std::string hs = argv[2];
     pt::store::Profile p = target_profile(argc, argv, 5);
+    const std::string reg_url =
+        hs + "/_matrix/client/v3/register";
 
-    const std::string body = with_proxy(
-        "{\"homeserver\":\"" + jesc(argv[2]) +
-        "\",\"username\":\""   + jesc(argv[3]) +
-        "\",\"password\":\""   + jesc(argv[4]) +
-        "\",\"reg_token\":\"\",\"proxy\":\"" + jesc(p.proxy) + "\"}", "");
+    auto post_reg = [&](const std::string& body) -> pt::HttpResult {
+        return pt::post(reg_url, body);
+    };
 
-    const pt::HttpResult r =
-        pt::post(host + "/api/ttys/register", body, bearer);
-    if (r.status != 200) { std::cout << r.body << "\n"; return 1; }
-    const std::string sid = sess_of(r.body);
-    if (sid.empty()) { std::cerr << "no session in response\n"; return 1; }
-    remember(host, sid, p);
-    std::cout << sid << "\n";
-    return 0;
+    // Round-trip counter for the UIA dance.
+    std::string uia_session;
+
+    for (int round = 0; round < 5; ++round) {
+        std::string body =
+            "{\"username\":\"" + jesc(argv[3]) +
+            "\",\"password\":\"" + jesc(argv[4]) +
+            "\",\"auth\":{\"type\":\"m.login.dummy\"}";
+        if (!uia_session.empty())
+            body += ",\"session\":\"" + jesc(uia_session) + "\"";
+        body += "}";
+
+        const auto r = pt::post(reg_url, body);
+
+        if (r.status == 200) {
+            // Success! Extract credentials.
+            auto tok = sess_of(r.body);   // reuse "session" extractor pattern
+            // Extract access_token
+            auto field = [&](const char* k) -> std::string {
+                auto key = std::string("\"") + k + "\":\"";
+                auto pos = r.body.find(key);
+                if (pos == std::string::npos) return "";
+                pos += key.size();
+                auto e = r.body.find('"', pos);
+                return e == std::string::npos ? "" :
+                       r.body.substr(pos, e - pos);
+            };
+            const std::string token = field("access_token");
+            const std::string user_id = field("user_id");
+            const std::string device = field("device_id");
+
+            if (token.empty()) { std::cerr << "no access_token\n"; return 1; }
+
+            // Send creds to relay to create ttys session.
+            std::string sbody =
+                "{\"account\":{\"homeserver\":\"" + jesc(hs) +
+                "\",\"user_id\":\""     + jesc(user_id) +
+                "\",\"access_token\":\"" + jesc(token) +
+                "\",\"device_id\":\""   + jesc(device) +
+                "\",\"proxy\":\""       + jesc(p.proxy) + "\"}}";
+            const auto sr = pt::post(relay_host + "/api/ttys/session",
+                                     sbody, bearer_from());
+            if (sr.status != 200) {
+                std::cout << sr.body << "\n"; return 1;
+            }
+            const std::string tsid = sess_of(sr.body);
+            if (tsid.empty()) { std::cerr << "no ttys session\n"; return 1; }
+            p.session = tsid; p.host = relay_host; p.enabled = true;
+            pt::store::save(p);
+            pt::store::set_current(p.name);
+            std::cout << tsid << "\n";
+            return 0;
+        }
+
+        // Parse UIA challenge
+        auto extract_str = [&](const char* k) -> std::string {
+            auto key = std::string("\"") + k + "\":\"";
+            auto pos = r.body.find(key);
+            if (pos == std::string::npos) return "";
+            pos += key.size();
+            auto e = r.body.find('"', pos);
+            return e == std::string::npos ? "" :
+                   r.body.substr(pos, e - pos);
+        };
+        uia_session = extract_str("session");
+
+        bool is_uia = (r.status == 401 &&
+                       r.body.find("\"flows\"") != std::string::npos);
+        if (!is_uia) {
+            std::cerr << r.body << "\n"; return 1;
+        }
+
+        // Find required stages (first flow only).
+        size_t fp = r.body.find("\"stages\"");
+        if (fp == std::string::npos) { std::cerr << r.body << "\n"; return 1; }
+        fp = r.body.find('[', fp);
+        std::vector<std::string> stages;
+        for (size_t i = fp; i < r.body.size(); ++i) {
+            if (r.body[i] == ']') break;
+            if (r.body[i] == '"' && i > 0 && r.body[i-1] != '\\') {
+                auto e = r.body.find('"', i+1);
+                if (e != std::string::npos) {
+                    stages.push_back(r.body.substr(i+1, e-i-1));
+                    i = e;
+                }
+            }
+        }
+
+        // Show what's needed.
+        std::cerr << "\nServer requires verification:\n";
+        for (size_t i = 0; i < stages.size(); ++i)
+            std::cerr << "  " << i+1 << "/" << stages.size()
+                      << ": " << stages[i] << "\n";
+        std::cerr << "\n";
+
+        // Build auth dict from user input.
+        std::string auth = "\"type\":";
+        bool any_stage = false;
+        std::string first_type;
+
+        for (auto& stage : stages) {
+            if (stage == "m.login.dummy") {
+                auth = "\"m.login.dummy\"";
+                any_stage = true;
+            } else if (stage.find("registration_token") != std::string::npos) {
+                std::cerr << "Registration token: ";
+                std::string tok; std::getline(std::cin, tok);
+                if (!tok.empty()) {
+                    auth = "{\"type\":\"m.login.registration_token\","
+                           "\"token\":\"" + jesc(tok) + "\"}";
+                    any_stage = true;
+                }
+            } else if (stage.find("recaptcha") != std::string::npos) {
+                std::cerr << "CAPTCHA required.\n"
+                             "Open the server's web registration page,\n"
+                             "solve the captcha and paste the\n"
+                             "g-recaptcha-response value here.\n"
+                             "> ";
+                std::string resp;
+                std::getline(std::cin, resp);
+                if (!resp.empty()) {
+                    auth = "{\"type\":\"m.login.recaptcha\","
+                           "\"response\":\"" + jesc(resp) + "\"}";
+                    any_stage = true;
+                }
+            } else if (stage.find("email") != std::string::npos) {
+                std::cerr << "Email: ";
+                std::string email;
+                std::getline(std::cin, email);
+                if (email.empty()) continue;
+                // Request token
+                const std::string req_url =
+                    hs + "/_matrix/client/v3/register/email/requestToken";
+                std::string eb = "{\"client_secret\":\"reg_sec\","
+                                 "\"email\":\"" + jesc(email) +
+                                 "\",\"send_attempt\":1}";
+                pt::post(req_url, eb);
+                std::cerr << "Check " << email << ", paste the token: ";
+                std::string tok; std::getline(std::cin, tok);
+                if (!tok.empty()) {
+                    auth = "{\"type\":\"m.login.email.identity\","
+                           "\"threepid_creds\":{\"sid\":\"" + jesc(tok) +
+                           "\",\"client_secret\":\"reg_sec\"}}";
+                    any_stage = true;
+                }
+            } else {
+                std::cerr << "Unsupported stage: " << stage << "\n";
+            }
+            if (any_stage) break;   // one stage per attempt
+        }
+
+        if (!any_stage) {
+            std::cerr << "Cannot complete registration on this server.\n"
+                         "Try: progterm-lite session <hs> <user> <token>"
+                         " <device>\n";
+            return 1;
+        }
+        body.replace(body.find("\"auth\":"),
+                     std::string("\"auth\":").size(),
+                     "\"auth\":{" + auth + "}");
+    }
+
+    std::cerr << "Too many rounds.\n";
+    return 1;
 }
 
 // session <hs> <user> <token> <device> [profile] — attach an EXISTING
