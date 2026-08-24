@@ -1,5 +1,9 @@
 # progressive-terminal (lite)
 
+> **Entire program: under 1,000 lines of C++20.** Every feature — profiles,
+> offline spooling, cached screens, command-level proxying to the full
+> client — fits in a codebase you can read top-to-bottom in one sitting.
+
 A **zero-option pipe** to a `progressive-cli serve --ttys` relay.
 One request per invocation: the path is forwarded verbatim, the body is
 sent exactly as typed, the response goes to stdout untouched. The client
