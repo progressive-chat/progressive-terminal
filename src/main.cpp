@@ -409,10 +409,17 @@ int cmd_proxy(const std::string& host, const std::string& bearer,
 
     if (sub == "status") {
         if (pname.empty()) { pt::store::ensure_default(); pname = pt::store::current(); }
-        const pt::HttpResult r = pt::get_plain(
-            host_from() + "/api/ttys/proxy", bearer);
-        std::cout << r.body << std::flush;
-        return r.status == 200 ? 0 : 1;
+        pt::store::Profile p;
+        pt::store::load(pname, p);
+        std::cout << "profile:      " << pname
+                  << "\nproxy:        "
+                  << (p.proxy.empty() ? "(not set — direct)"
+                                      : p.proxy) << "\n";
+        const pt::HttpResult r =
+            pt::get(host_from() + "/api/ttys/proxy", bearer_from());
+        std::cout << "relay global: "
+                  << (r.status == 200 ? r.body : "(unreachable)") << "\n";
+        return 0;
     }
 
     if (sub.empty()) {
