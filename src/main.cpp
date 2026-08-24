@@ -323,16 +323,180 @@ int cmd_register(const std::string& host, const std::string& bearer,
         return 1;
     }
     pt::store::Profile p = target_profile(argc, argv, 5);
-    const std::string body =
-        "{\"homeserver\":\"" + jesc(argv[2]) + "\"" +
-        ",\"username\":\"" + jesc(argv[3]) + "\"" +
-        ",\"password\":\"" + jesc(argv[4]) + "\"" +
-        ",\"reg_token\":\"\",\"proxy\":\"" + jesc(p.proxy) + "\"}";
-    { std::ofstream df("/tmp/dbg_body.txt"); df << body; }
-const pt::HttpResult r =
-        pt::post(host + "/api/ttys/register", body, bearer);
-    if (r.status != 200) { std::cout << r.body << "\n"; return 1; }
-    const std::string sid = sess_of(r.body);
+    const std::string hs = argv[2];
+    const std::string reg_ep = host + "/api/ttys/register";
+
+    auto post_reg = [&](const std::string& auth_json) -> pt::HttpResult {
+        std::string b =
+            "{\"homeserver\":\"" + jesc(hs) +
+            "\",\"username\":\"" + jesc(argv[3]) +
+            "\",\"password\":\"" + jesc(argv[4]) +
+            "\",\"reg_token\":\"\",\"proxy\":\"" + jesc(p.proxy) + "\"";
+        if (!auth_json.empty())
+            b += ",\"uia_auth\":" + auth_json;
+        b += "}";
+        return pt::post(reg_ep, b, bearer);
+    };
+
+    // Round 0: dummy auth
+    auto r = post_reg("{\"type\":\"m.login.dummy\"}");
+    if (r.status == 200 && !sess_of(r.body).empty()) {
+        remember(host, sess_of(r.body), p);
+        std::cout << sess_of(r.body) << "\n";
+        return 0;
+    }
+
+    // Parse UIA challenge from 401
+    auto jstr = [&](const std::string& body, const char* k) -> std::string {
+        auto key = "\"" + std::string(k) + "\":\"";
+        auto pos = body.find(key);
+        if (pos == std::string::npos) return "";
+        pos += key.size();
+        auto e = body.find('"', pos);
+        return e == std::string::npos ? "" : body.substr(pos, e - pos);
+    };
+    std::string uia_session = jstr(r.body, "session");
+    if (uia_session.empty()) { std::cout << r.body << "\n"; return 1; }
+
+    // Extract stages from first flow
+    std::vector<std::string> stages;
+    size_t fp = r.body.find("\"stages\"");
+    if (fp != std::string::npos) {
+        fp = r.body.find('[', fp);
+        size_t depth = 0;
+        for (size_t i = fp; i < r.body.size(); ++i) {
+            if (r.body[i] == '[') ++depth;
+            if (r.body[i] == ']') { --depth; if (!depth) break; }
+            if (depth >= 1 && r.body[i] == '"' && r.body[i-1] != '\\') {
+                auto e = r.body.find('"', i+1);
+                if (e != std::string::npos) {
+                    stages.push_back(r.body.substr(i+1, e-i-1));
+                    i = e;
+                }
+            }
+        }
+    }
+
+    // Filter out dummy
+    std::vector<std::string> needed;
+    for (auto& st : stages)
+        if (st != "m.login.dummy") needed.push_back(st);
+
+    if (needed.empty()) { std::cout << r.body << "\n"; return 1; }
+
+    // Interactive resolution
+    std::cerr << "\nServer requires verification:\n";
+    for (size_t i = 0; i < needed.size(); ++i)
+        std::cerr << "  " << i+1 << "/" << needed.size() << ": " << needed[i] << "\n";
+    std::cerr << "\n";
+
+    std::vector<std::pair<std::string,std::string>> resolved;
+
+    for (auto& stage : needed) {
+        if (stage == "m.login.recaptcha") {
+            // Extract captcha public_key from the 401 body
+            auto pk_start = r.body.find("\"public_key\":\"");
+            std::string pk;
+            if (pk_start != std::string::npos) {
+                pk_start += 14;
+                auto pk_end = r.body.find('"', pk_start);
+                pk = r.body.substr(pk_start, pk_end - pk_start);
+            }
+            std::cerr << "CAPTCHA required.\n"
+                         "Solve it at:\n"
+                         "https://www.google.com/recaptcha/api/fallback?k="
+                      << pk << "\n\n"
+                         "Paste the g-recaptcha-response value: ";
+            std::string resp;
+            std::getline(std::cin, resp);
+            if (!resp.empty())
+                resolved.push_back({"m.login.recaptcha", resp});
+        }
+        else if (stage.find("email") != std::string::npos) {
+            std::cerr << "Email address: ";
+            std::string email;
+            std::getline(std::cin, email);
+            if (email.empty()) continue;
+            const std::string cs = "progterm_reg_" + jesc(argv[3]);
+            const std::string req_url = hs +
+                "/_matrix/client/v3/register/email/requestToken";
+            const std::string eb = "{\"client_secret\":\"" + jesc(cs) +
+                "\",\"email\":\"" + jesc(email) +
+                "\",\"send_attempt\":1}";
+            pt::post(req_url, eb);
+            std::cerr << "Check " << email << ", click the link.\n"
+                         "Paste the token from the URL (?sid=…): ";
+            std::string tok;
+            std::getline(std::cin, tok);
+            if (!tok.empty())
+                resolved.push_back({"m.login.email.identity",
+                    "{\"sid\":\"" + jesc(tok) +
+                    "\",\"client_secret\":\"" + jesc(cs) + "\"}"});
+        }
+        else if (stage == "m.login.registration_token") {
+            std::cerr << "Registration token: ";
+            std::string tok;
+            std::getline(std::cin, tok);
+            if (!tok.empty())
+                resolved.push_back({"m.login.registration_token", tok});
+        }
+        else {
+            std::cerr << "[" << stage << "] unsupported — try web registration\n";
+        }
+    }
+
+    if (resolved.empty()) {
+        std::cerr << "\nNo stages completed.\n"
+                     "Alternative: register via web browser, then:\n"
+                     "  progterm-lite session " << hs
+                  << " <user> <access_token> <device>\n";
+        return 1;
+    }
+
+    // Build combined auth JSON
+    std::string auth_stages;
+    for (size_t i = 0; i < resolved.size(); ++i) {
+        if (i) auth_stages += ",";
+        auth_stages += "{\"type\":\"" + resolved[i].first +
+                       "\",\"data\":\"" + jesc(resolved[i].second) + "\"}";
+    }
+
+    // Retry with resolved auth
+    std::string auth_json = "{\"type\":\"" + resolved[0].first + "\"";
+    if (resolved[0].second[0] == '{')
+        auth_json = "\"auth\":[" + auth_stages + "]";
+    else
+        auth_json = "\"auth\":{\"type\":\"" + resolved[0].first +
+                     "\",\"response\":\"" + jesc(resolved[0].second) + "\"}";
+
+    // Simple approach: single-stage retry
+    std::string retry_body =
+        "{\"homeserver\":\"" + jesc(hs) +
+        "\",\"username\":\"" + jesc(argv[3]) +
+        "\",\"password\":\"" + jesc(argv[4]) +
+        "\",\"reg_token\":\"\",\"proxy\":\"" + jesc(p.proxy) +
+        "\",\"uia_session\":\"" + jesc(uia_session) +
+        "\",\"uia_auth\":{\"type\":\"" + resolved[0].first + "\"}";
+
+    // For multi-stage, combine all resolved into one auth object
+    if (resolved.size() > 1 || resolved[0].first.find("email") != std::string::npos) {
+        // Use threepid_creds format for email
+        retry_body =
+            "{\"homeserver\":\"" + jesc(hs) +
+            "\",\"username\":\"" + jesc(argv[3]) +
+            "\",\"password\":\"" + jesc(argv[4]) +
+            "\",\"proxy\":\"" + jesc(p.proxy) +
+            "\",\"uia_auth\":[" ;
+        for (size_t i = 0; i < resolved.size(); ++i) {
+            if (i) retry_body += ",";
+            retry_body += resolved[i].second;
+        }
+        retry_body += "]}";
+    }
+
+    auto rr = pt::post(reg_ep, retry_body, bearer);
+    if (rr.status != 200) { std::cout << rr.body << "\n"; return 1; }
+    const std::string sid = sess_of(rr.body);
     if (sid.empty()) { std::cerr << "no session in response\n"; return 1; }
     remember(host, sid, p);
     std::cout << sid << "\n";
