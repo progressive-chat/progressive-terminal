@@ -4,36 +4,18 @@
 
 namespace pt { namespace store {
 
-// A profile is a container for connection settings and an OPTIONAL account
-// (session). It can exist with no account (just proxy/host config). At least
-// one profile is always enabled.
 struct Profile {
-    std::string name;
+    std::string name, proxy, host, session;
     bool enabled = true;
-    std::string proxy;    // socks5://[u:p@]h:p | http://h:p | off | "" (server default)
-    std::string host;
-    std::string session;
 };
 
-// Upsert profile `p.name`. Enforces the "at least one enabled" invariant.
-bool save_profile(const Profile& p);
-
-// Load profile `name`; when empty, load the current (enabled) profile.
-// Returns false if none found.
-bool load_profile(std::string name, Profile& out);
-
-std::string current_name();
-bool set_current(const std::string& name);   // must be enabled
-
-std::vector<Profile> list_profiles();
-
-// Enable/disable a profile. Refuses to disable the last enabled one.
-bool set_enabled(const std::string& name, bool on);
-
-// Remove a profile. Refuses if it is the only enabled one.
-bool remove_profile(std::string name);
-
-// Create a default enabled profile ("default") if no profiles exist.
-void ensure_default_profile();
+bool save(Profile& p);                       // upsert + invariant + current fix
+bool load(std::string name, Profile& out);   // "" = current (или первый включённый)
+std::string current();
+bool set_current(const std::string& name);   // только включённый
+std::vector<Profile> all();
+bool set_enabled(const std::string& name, bool on);  // ≥1 остаётся
+bool remove(const std::string& name);                // ≥1 остаётся
+void ensure_default();
 
 }}  // namespace pt::store

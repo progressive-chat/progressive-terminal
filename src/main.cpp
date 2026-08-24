@@ -12,8 +12,7 @@
 // Layout-independent typing: PROGTERM_LAYOUT=ru|de|fr|es|it|br|dvorak|colemak
 // remaps entered lines from that layout's printed characters back to US keys.
 
-#include "http.hpp"
-#include "discover.hpp"
+#include "net.hpp"
 #include "store.hpp"
 
 #include <iostream>
@@ -35,7 +34,7 @@ namespace {
 
 std::string host_from() {
     if (const char* e = std::getenv("PROGTERM_HOST")) return e;
-    const std::string found = pt::discover_ttys_host(29325, 10);
+    const std::string found = pt::discover_relay();
     return found.empty() ? "http://127.0.0.1:29325" : found;
 }
 
@@ -162,9 +161,9 @@ void outbox_flush(const std::string& host, const std::string& bearer) {
     for (const auto& l : pending) {
         const size_t tab = l.find('\t');
         if (tab == std::string::npos) continue;
-        const pt::HttpResult r = pt::http_post_json(
+        const pt::HttpResult r = pt::post(
             host + "/" + l.substr(0, tab), l.substr(tab + 1), bearer);
-        if (r.http_status == 0)
+        if (r.status == 0)
             std::ofstream(p, std::ios::app) << l << '\n';
     }
 }
@@ -209,11 +208,11 @@ Target resolve_target(int argc, char** argv) {
     Target t;
     const std::string arg = argc >= 3 ? argv[2] : "";
     pt::store::Profile p;
-    if (!arg.empty() && pt::store::load_profile(arg, p))
+    if (!arg.empty() && pt::store::load(arg, p))
         t = {p.session, p.host, p.proxy, p.name};
     else if (!arg.empty())
         t.session = arg;                                   // raw session id
-    else if (pt::store::load_profile("", p))
+    else if (pt::store::load("", p))
         t = {p.session, p.host, p.proxy, p.name};
     return t;
 }
@@ -223,7 +222,7 @@ SessPx sess_px(int argc, char** argv) {
     const Target t = resolve_target(argc, argv);
     if (!t.session.empty()) return {t.session, t.proxy, true};
     pt::store::Profile p;
-    if (pt::store::load_profile("", p) && !p.session.empty())
+    if (pt::store::load("", p) && !p.session.empty())
         return {p.session, t.proxy, true};
     return {};
 }
@@ -240,42 +239,15 @@ std::string sess_of(const std::string& body) {
 }
 
 void usage() {
-    const pt::HttpResult r = pt::http_get_plain(
+    const pt::HttpResult r = pt::get_plain(
         host_from() + "/api/ttys/usage", bearer_from());
-    if (r.http_status == 200) { std::cout << r.body << std::flush; return; }
+    if (r.status == 200) { std::cout << r.body << std::flush; return; }
     std::cout << "progterm-lite — special proxy to the full client\n\n"
                  "verbs: register|session <hs> <u> <p|token> <dev?> [profile]\n"
                  "  last | sync|render|term [ses|profile] [room] | logout\n"
                  "  proxy [<spec>|off|status] | profile <action>… | raw …\n";
 }
 
-// ---- interactive remote-terminal loop ----
-int term_loop(const std::string& host, const std::string& bearer,
-              const std::string& session, const std::string& room,
-              const std::string& proxy) {
-    const std::string in_url = host + "/api/ttys/input";
-    fetch_frame(host, bearer, session, room, proxy);   // first paint
-
-    std::cout << "> " << std::flush;
-    std::string line;
-    while (std::getline(std::cin, line)) {
-        if (line == ":q" || line == ":quit" || line == "/quit") break;
-        if (line.empty()) { std::cout << "> " << std::flush; continue; }
-        line = layout_fix_line(line);
-
-        const std::string ibody = with_proxy(
-            "{\"session\":\"" + jesc(session) +
-            "\",\"input\":\"" + jesc(line) + "\"}", proxy);
-        const pt::HttpResult ir =
-            pt::http_post_json(in_url, ibody, bearer);
-        if (ir.http_status == 0)
-            outbox_record("api/ttys/input", ibody);
-
-        fetch_frame(rd_url, bearer, session, room, proxy);
-        std::cout << "> " << std::flush;
-    }
-    return 0;
-}
 
 // One shared screen refresh: POST render (with proxy), cache on success,
 // fall back to the last known frame when offline. Returns true if a live
@@ -285,20 +257,43 @@ bool fetch_frame(const std::string& host, const std::string& bearer,
                  const std::string& px) {
     const std::string rb = with_proxy(render_body(ses, room), px);
     const pt::HttpResult fr =
-        pt::http_post_plain(host + "/api/ttys/render", rb, bearer);
-    if (fr.http_status == 200) {
+        pt::post_plain(host + "/api/ttys/render", rb, bearer);
+    if (fr.status == 200) {
         write_cache("last_frame", fr.body);
         std::cout << "\x1b[2J\x1b[H" << fr.body;
         return true;
     }
     std::string last;
-    if (fr.http_status == 0 && read_cache("last_frame", last)) {
+    if (fr.status == 0 && read_cache("last_frame", last)) {
         std::cout << "\x1b[2J\x1b[H" << last
                   << "\n[offline] showing last known screen\n";
         return true;
     }
-    if (fr.http_status != 0) std::cout << fr.body << "\n";
+    if (fr.status != 0) std::cout << fr.body << "\n";
     return false;
+}
+
+// Interactive remote-terminal loop: read line → deliver → show screen.
+int term_loop(const std::string& host, const std::string& bearer,
+              const std::string& session, const std::string& room,
+              const std::string& proxy) {
+    const std::string in_url = host + "/api/ttys/input";
+    fetch_frame(host, bearer, session, room, proxy);   // first paint
+    std::cout << "> " << std::flush;
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line == ":q" || line == ":quit" || line == "/quit") break;
+        if (line.empty()) { std::cout << "> " << std::flush; continue; }
+        line = layout_fix_line(line);
+        const std::string ibody = with_proxy(
+            "{\"session\":\"" + jesc(session) +
+            "\",\"input\":\"" + jesc(line) + "\"}", proxy);
+        const pt::HttpResult ir = pt::post(in_url, ibody, bearer);
+        if (ir.status == 0) outbox_record("api/ttys/input", ibody);
+        fetch_frame(host, bearer, session, room, proxy);
+        std::cout << "> " << std::flush;
+    }
+    return 0;
 }
 
 // ---- commands ----
@@ -307,16 +302,16 @@ bool fetch_frame(const std::string& host, const std::string& bearer,
 void remember(const std::string& host, const std::string& sid,
               pt::store::Profile p) {
     p.session = sid; p.host = host;
-    pt::store::save_profile(p);
+    pt::store::save(p);
     pt::store::set_current(p.name);
 }
 
 // Current-or-named profile, created enabled when missing.
 pt::store::Profile target_profile(int argc, char** argv, int idx) {
     std::string pname = argc > idx ? argv[idx] : "";
-    if (pname.empty()) { pt::store::ensure_default_profile(); pname = pt::store::current_name(); }
+    if (pname.empty()) { pt::store::ensure_default(); pname = pt::store::current(); }
     pt::store::Profile p;
-    if (!pt::store::load_profile(pname, p)) { p.name = pname; p.enabled = true; }
+    if (!pt::store::load(pname, p)) { p.name = pname; p.enabled = true; }
     return p;
 }
 
@@ -336,8 +331,8 @@ int cmd_register(const std::string& host, const std::string& bearer,
         "\",\"reg_token\":\"\",\"proxy\":\"" + jesc(p.proxy) + "\"}", "");
 
     const pt::HttpResult r =
-        pt::http_post_json(host + "/api/ttys/register", body, bearer);
-    if (r.http_status != 200) { std::cout << r.body << "\n"; return 1; }
+        pt::post(host + "/api/ttys/register", body, bearer);
+    if (r.status != 200) { std::cout << r.body << "\n"; return 1; }
     const std::string sid = sess_of(r.body);
     if (sid.empty()) { std::cerr << "no session in response\n"; return 1; }
     remember(host, sid, p);
@@ -364,8 +359,8 @@ int cmd_session(const std::string& host, const std::string& bearer,
         "\",\"proxy\":\""       + jesc(p.proxy) + "\"}}";
 
     const pt::HttpResult r =
-        pt::http_post_json(host + "/api/ttys/session", b2, bearer);
-    if (r.http_status != 200) { std::cout << r.body << "\n"; return 1; }
+        pt::post(host + "/api/ttys/session", b2, bearer);
+    if (r.status != 200) { std::cout << r.body << "\n"; return 1; }
     const std::string sid = sess_of(r.body);
     if (sid.empty()) { std::cerr << "no session in response\n"; return 1; }
     remember(host, sid, p);
@@ -375,14 +370,14 @@ int cmd_session(const std::string& host, const std::string& bearer,
 
 int cmd_last(const std::string& host, const std::string& bearer) {
     const pt::HttpResult r =
-        pt::http_get_json(host + "/api/ttys/session/last", bearer);
-    if (r.http_status != 200) { std::cout << r.body << "\n"; return 1; }
+        pt::get(host + "/api/ttys/session/last", bearer);
+    if (r.status != 200) { std::cout << r.body << "\n"; return 1; }
     const std::string sid = sess_of(r.body);
     if (!sid.empty()) {
         pt::store::Profile p;
-        if (pt::store::load_profile("", p)) {
+        if (pt::store::load("", p)) {
             p.session = sid;
-            pt::store::save_profile(p);
+            pt::store::save(p);
         }
     }
     std::cout << sid << "\n";
@@ -396,12 +391,12 @@ int cmd_sync(const std::string& host, const std::string& bearer,
     const std::string px = sess_px(argc, argv).px;
     const std::string body = with_proxy(
         "{\"session\":\"" + jesc(ses) + "\"}", px);
-    const pt::HttpResult r = pt::http_post_plain(
+    const pt::HttpResult r = pt::post_plain(
         host + "/api/ttys/sync", body, bearer);
-    if (r.http_status == 0)
+    if (r.status == 0)
         return outbox_record("api/ttys/sync", body) ? 0 : 2;
     std::cout << r.body << "\n";
-    return r.http_status == 200 ? 0 : 1;
+    return r.status == 200 ? 0 : 1;
 }
 
 // proxy <spec|off|status> [profile] — THIN-SIDE setting stored in the
@@ -413,22 +408,22 @@ int cmd_proxy(const std::string& host, const std::string& bearer,
     std::string pname = argc >= 4 ? argv[3] : "";
 
     if (sub == "status") {
-        if (pname.empty()) { pt::store::ensure_default_profile(); pname = pt::store::current_name(); }
-        const pt::HttpResult r = pt::http_get_plain(
+        if (pname.empty()) { pt::store::ensure_default(); pname = pt::store::current(); }
+        const pt::HttpResult r = pt::get_plain(
             host_from() + "/api/ttys/proxy", bearer);
         std::cout << r.body << std::flush;
-        return r.http_status == 200 ? 0 : 1;
+        return r.status == 200 ? 0 : 1;
     }
 
     if (sub.empty()) {
         std::cerr << "usage: progterm-lite proxy <spec|off|status> [profile]\n";
         return 1;
     }
-    if (pname.empty()) { pt::store::ensure_default_profile(); pname = pt::store::current_name(); }
+    if (pname.empty()) { pt::store::ensure_default(); pname = pt::store::current(); }
     pt::store::Profile p;
-    if (!pt::store::load_profile(pname, p)) { p.name = pname; p.enabled = true; }
+    if (!pt::store::load(pname, p)) { p.name = pname; p.enabled = true; }
     p.proxy = (sub == "off") ? "" : sub;
-    pt::store::save_profile(p);
+    pt::store::save(p);
     std::cout << pname << ".proxy = "
               << (p.proxy.empty() ? "(off)" : p.proxy) << "\n";
     return 0;
@@ -440,8 +435,8 @@ int cmd_profile(int argc, char** argv) {
 
     if (sub == "list" || sub.empty()) {
         std::cout << "profiles:\n";
-        const std::string cur = pt::store::current_name();
-        for (const auto& p : pt::store::list_profiles())
+        const std::string cur = pt::store::current();
+        for (const auto& p : pt::store::all())
             std::cout << (p.name == cur ? "* " : "  ") << p.name
                       << (p.enabled ? "  [enabled]" : "  [disabled]")
                       << "  proxy=" << (p.proxy.empty() ? "(off)" : p.proxy)
@@ -453,9 +448,9 @@ int cmd_profile(int argc, char** argv) {
         const std::string name = nm(3);
         if (name.empty()) { std::cerr << "profile name required\n"; return 1; }
         pt::store::Profile p;
-        if (!pt::store::load_profile(name, p)) { p.name = name; p.enabled = true; }
+        if (!pt::store::load(name, p)) { p.name = name; p.enabled = true; }
         if (argc >= 5) p.proxy = argv[4];
-        pt::store::save_profile(p);
+        pt::store::save(p);
         std::cout << "profile " << name << " saved\n";
         return 0;
     }
@@ -480,7 +475,7 @@ int cmd_profile(int argc, char** argv) {
     }
     if (sub == "delete" || sub == "rm") {
         const std::string name = nm(3);
-        if (!pt::store::remove_profile(name)) {
+        if (!pt::store::remove(name)) {
             std::cerr << "cannot delete '" << name << "'\n";
             return 1;
         }
@@ -493,11 +488,11 @@ int cmd_profile(int argc, char** argv) {
             std::cerr << "usage: progterm-lite profile " << sub << " <file>\n";
             return 1;
         }
-        const auto ps = pt::store::list_profiles();
+        const auto ps = pt::store::all();
         if (sub == "export") {
             if (ps.empty()) { std::cerr << "nothing to export\n"; return 1; }
             std::ofstream f(file, std::ios::trunc);
-            f << "current " << pt::store::current_name() << "\n";
+            f << "current " << pt::store::current() << "\n";
             for (const auto& p : ps)
                 f << "profile " << p.name << "\nenabled "
                   << (p.enabled ? "true" : "false") << "\nproxy " << p.proxy
@@ -517,7 +512,7 @@ int cmd_profile(int argc, char** argv) {
         int n = 0;
         auto commit = [&] {
             if (!have) return;
-            pt::store::save_profile(cur);
+            pt::store::save(cur);
             ++n;
             have = false;
         };
@@ -551,14 +546,14 @@ int cmd_profile(int argc, char** argv) {
 }
 
 int cmd_logout(int argc, char** argv) {
-    std::string pname = argc >= 3 ? argv[2] : pt::store::current_name();
+    std::string pname = argc >= 3 ? argv[2] : pt::store::current();
     pt::store::Profile p;
-    if (!pt::store::load_profile(pname, p)) {
+    if (!pt::store::load(pname, p)) {
         std::cerr << "unknown profile '" << pname << "'\n";
         return 1;
     }
     p.session.clear();
-    pt::store::save_profile(p);
+    pt::store::save(p);
     std::cout << "logged out of profile " << pname << "\n";
     return 0;
 }
@@ -570,12 +565,12 @@ int cmd_raw(const std::string& host, const std::string& bearer,
     if (!path.empty() && path[0] == '/') path.erase(0, 1);
     const std::string body = argc >= 4 ? argv[3] : "";
     const pt::HttpResult r = body.empty()
-        ? pt::http_get_json(host + "/" + path, bearer)
-        : pt::http_post_json(host + "/" + path, body, bearer);
-    if (r.http_status == 0)
+        ? pt::get(host + "/" + path, bearer)
+        : pt::post(host + "/" + path, body, bearer);
+    if (r.status == 0)
         return (!body.empty() && outbox_record(path, body)) ? 0 : 2;
     std::cout << r.body << "\n";
-    return (r.http_status >= 200 && r.http_status < 300) ? 0 : 1;
+    return (r.status >= 200 && r.status < 300) ? 0 : 1;
 }
 
 }  // namespace
@@ -643,10 +638,10 @@ static int run_main(int argc, char** argv) {
     {
         const std::string first = argc >= 3 ? argv[2] : "";
         pt::store::Profile p;
-        if (!first.empty() && pt::store::load_profile(first, p)
+        if (!first.empty() && pt::store::load(first, p)
             && !p.session.empty())
             ses = p.session;
-        else if (pt::store::load_profile("", p) && !p.session.empty())
+        else if (pt::store::load("", p) && !p.session.empty())
             ses = p.session;
     }
     if (ses.empty()) {
@@ -664,12 +659,12 @@ static int run_main(int argc, char** argv) {
         sess_px(argc, argv).px);
 
     const pt::HttpResult ir =
-        pt::http_post_json(host + "/api/ttys/input", ibody, bearer);
-    if (ir.http_status == 0 && outbox_record("api/ttys/input", ibody))
+        pt::post(host + "/api/ttys/input", ibody, bearer);
+    if (ir.status == 0 && outbox_record("api/ttys/input", ibody))
         return 0;
 
     fetch_frame(host, bearer, ses, "", sess_px(argc, argv).px);
-    return ir.http_status >= 200 && ir.http_status < 300 ? 0 : 1;
+    return ir.status >= 200 && ir.status < 300 ? 0 : 1;
 }
 
 int main(int argc, char** argv) { return run_main(argc, argv); }

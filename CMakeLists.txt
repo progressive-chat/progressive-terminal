@@ -13,9 +13,8 @@ find_package(CURL REQUIRED)
 
 add_executable(progterm-lite
     src/main.cpp
-    src/http.cpp
+    src/net.cpp
     src/store.cpp
-    src/discover.cpp
 )
 
 target_include_directories(progterm-lite PRIVATE src)
