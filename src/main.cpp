@@ -726,5 +726,4 @@ static int run_main(int argc, char** argv) {
     fetch_frame(host, bearer, ses, "", sess_px(argc, argv).px);
     return ir.status >= 200 && ir.status < 300 ? 0 : 1;
 }
-
 int main(int argc, char** argv) { return run_main(argc, argv); }
