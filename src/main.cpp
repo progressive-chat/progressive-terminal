@@ -143,6 +143,18 @@ Target resolve_target(int argc, char** argv) {
 }
 
 
+// Proxy of the ACTIVE profile (explicit <profile> argument wins when it
+// names one). Every session request re-asserts this value.
+std::string active_proxy(int argc, char** argv) {
+    if (argc >= 3) {
+        pt::store::Profile p;
+        if (pt::store::load_profile(argv[2], p)) return p.proxy;
+    }
+    pt::store::Profile p;
+    if (pt::store::load_profile("", p)) return p.proxy;
+    return "";
+}
+
 // Session for a verb; explains the profile-aware resolution on failure.
 std::string jesc(const std::string& s);
 
@@ -186,16 +198,26 @@ std::string jesc(const std::string& s) {
     return o;
 }
 
+// Append the profile's proxy to a finished session-request body so the
+// relay re-applies it per-session (server globals stay untouched).
+std::string with_proxy(std::string body, const std::string& px) {
+    if (px.empty()) return body;
+    const auto pos = body.rfind('}');
+    body.insert(pos, ",\"proxy\":\"" + jesc(px) + "\"");
+    return body;
+}
+
 std::string render_body(const std::string& session, const std::string& room);
 
 // progterm term <session> [room] — the remote-terminal loop: every stdin
 // line is delivered to the full client's REPL, then the refreshed screen
 // comes back as plain text and is printed verbatim.
 int term_loop(const std::string& host, const std::string& bearer,
-              const std::string& session, const std::string& room) {
+              const std::string& session, const std::string& room,
+              const std::string& proxy) {
     const std::string in_url = host + "/api/ttys/input";
     const std::string rd_url = host + "/api/ttys/render";
-    auto frame_body = [&] { return render_body(session, room); };
+    auto frame_body = [&] { return with_proxy(render_body(session, room), proxy); };
 
     pt::http_post_plain(rd_url, frame_body(), bearer);  // first paint
     std::cout << "term> " << std::flush;
@@ -206,8 +228,8 @@ int term_loop(const std::string& host, const std::string& bearer,
             const std::string ibody =
                 "{\"session\":\"" + jesc(session) +
                 "\",\"input\":\"" + jesc(line) + "\"}";
-            const pt::HttpResult ir =
-                pt::http_post_json(in_url, ibody, bearer);
+            const pt::HttpResult ir = pt::http_post_json(
+                in_url, with_proxy(ibody, proxy), bearer);
             if (ir.http_status == 0)
                 outbox_record("api/ttys/input", ibody);
         }
@@ -436,25 +458,30 @@ int cmd_sync(const std::string& host, const std::string& bearer, int argc,
     return r.http_status == 200 ? 0 : 1;
 }
 
-int cmd_proxy(const std::string& host, const std::string& bearer, int argc,
-              char** argv) {
-    std::string body;
-    if (argc >= 4 && argv[2] == std::string("on"))
-        body = "{\"action\":\"on\",\"preset\":\"" + jesc(argv[3]) + "\"}";
-    else if (argc >= 3 && argv[2] == std::string("off"))
-        body = "{\"action\":\"off\"}";
-    if (body.empty()) {  // no args -> status (GET)
+// proxy <spec|off> [profile] — THIN-SIDE setting: stored in the profile
+// container and sent with EVERY session request; the relay applies it
+// per-session and never touches its own global config.
+int cmd_proxy(int argc, char** argv) {
+    const std::string spec = argc >= 3 ? argv[2] : "";
+    std::string pname = argc >= 4 ? argv[3] : "";
+    if (pname.empty()) { pt::store::ensure_default_profile(); pname = pt::store::current_name(); }
+    if (spec.empty()) {  // status: local value + relay global (informational)
+        pt::store::Profile p;
+        pt::store::load_profile(pname, p);
+        std::cout << pname << ".proxy = "
+                  << (p.proxy.empty() ? "(off)" : p.proxy) << "\n";
         const pt::HttpResult r =
-            pt::http_get_json(host + "/api/ttys/proxy", bearer);
-        std::cout << r.body << "\n";
-        return r.http_status == 200 ? 0 : 1;
+            pt::http_get_json(host_from() + "/api/ttys/proxy", bearer_from());
+        std::cout << "full-client global: " << r.body << "\n";
+        return 0;
     }
-    const pt::HttpResult r =
-        pt::http_post_json(host + "/api/ttys/proxy", body, bearer);
-    if (r.http_status == 0)
-        return outbox_record("api/ttys/proxy", body) ? 0 : 2;
-    std::cout << r.body << "\n";
-    return r.http_status == 200 ? 0 : 1;
+    pt::store::Profile p;
+    if (!pt::store::load_profile(pname, p)) { p.name = pname; p.enabled = true; }
+    p.proxy = (spec == "off") ? "" : spec;
+    pt::store::save_profile(p);
+    std::cout << pname << ".proxy = "
+              << (p.proxy.empty() ? "(off)" : p.proxy) << "\n";
+    return 0;
 }
 
 void usage() {
@@ -522,7 +549,7 @@ int main(int argc, char** argv) {
 
         if (arg1 == "last")     return cmd_last(host, bearer);
         if (arg1 == "sync")     return cmd_sync(host, bearer, argc, argv);
-        if (arg1 == "proxy")    return cmd_proxy(host, bearer, argc, argv);
+        if (arg1 == "proxy")    return cmd_proxy(argc, argv);
         if (arg1 == "profile")  return cmd_profile(argc, argv);
         if (arg1 == "logout")   return cmd_logout(argc, argv);
         if (arg1 == "render") {
@@ -551,7 +578,8 @@ int main(int argc, char** argv) {
         if (arg1 == "term") {
             const std::string ses = need_session(argc, argv);
             if (ses.empty()) return 1;
-            return term_loop(host, bearer, ses, argc >= 4 ? argv[3] : "");
+            return term_loop(host, bearer, ses, argc >= 4 ? argv[3] : "",
+                            active_proxy(argc, argv));
         }
     }
 
@@ -567,9 +595,9 @@ int main(int argc, char** argv) {
 
     std::string line = arg1;
     for (int i = 2; i < argc; ++i) line += std::string(" ") + argv[i];
-    const std::string ibody =
+    const std::string ibody = with_proxy(
         "{\"session\":\"" + jesc(ses) +
-        "\",\"input\":\"" + jesc(line) + "\"}";
+        "\",\"input\":\"" + jesc(line) + "\"}", active_proxy(argc, argv));
     const pt::HttpResult ir =
         pt::http_post_json(host + "/api/ttys/input", ibody, bearer);
     if (ir.http_status == 0 && outbox_record("api/ttys/input", ibody)) {
