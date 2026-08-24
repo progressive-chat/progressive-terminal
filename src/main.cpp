@@ -324,11 +324,12 @@ int cmd_register(const std::string& host, const std::string& bearer,
     }
     pt::store::Profile p = target_profile(argc, argv, 5);
     const std::string body =
-        "{\"homeserver\":\""   + jesc(argv[2]) +
-        ",\"username\":\""     + jesc(argv[3]) +
-        ",\"password\":\""     + jesc(argv[4]) +
+        "{\"homeserver\":\"" + jesc(argv[2]) + "\"" +
+        ",\"username\":\"" + jesc(argv[3]) + "\"" +
+        ",\"password\":\"" + jesc(argv[4]) + "\"" +
         ",\"reg_token\":\"\",\"proxy\":\"" + jesc(p.proxy) + "\"}";
-    const pt::HttpResult r =
+    { std::ofstream df("/tmp/dbg_body.txt"); df << body; }
+const pt::HttpResult r =
         pt::post(host + "/api/ttys/register", body, bearer);
     if (r.status != 200) { std::cout << r.body << "\n"; return 1; }
     const std::string sid = sess_of(r.body);
