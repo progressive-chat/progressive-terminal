@@ -127,10 +127,12 @@ Target resolve_target(int argc, char** argv) {
 
 
 // Session for a verb; explains the profile-aware resolution on failure.
+std::string jesc(const std::string& s);
+
 std::string need_session(int argc, char** argv) {
     const Target t = resolve_target(argc, argv);
     if (!t.session.empty()) return t.session;
-    std::cerr << "no session — run: progterm register <homeserver> <user>"
+    std::cerr << "no session — run: progterm-lite register <homeserver> <user>"
                  " <password> [profile]   (or pass <session|profile>)\n";
     return "";
 }
@@ -444,9 +446,14 @@ void usage() {
     const pt::HttpResult r = pt::http_get_plain(
         host_from() + "/api/ttys/usage", bearer_from());
     if (r.http_status == 200) { std::cout << r.body << std::flush; return; }
-    std::cout << "progterm-lite — special proxy to the full client\n"
-                 "relay unreachable — start 'progressive-cli serve --ttys'"
-                 " or set PROGTERM_HOST\n";
+    std::cout << "progterm-lite — special proxy to the full client\n";
+    if (r.http_status == 404)
+        std::cout << "\n[!] relay is TOO OLD: it has no /api/ttys/usage.\n"
+                     "    Update the full client (v0.5.4+) and restart"
+                     " 'serve --ttys'.\n";
+    else
+        std::cout << "\n[!] relay unreachable — start"
+                     " 'progressive-cli serve --ttys'.\n";
 }
 
 }  // namespace
