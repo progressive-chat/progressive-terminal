@@ -410,7 +410,8 @@ int cmd_proxy(int argc, char** argv) {
 
     // --- status ---
     if (sub == "status") {
-        auto pn = argc >= 4 ? argv[3] : "";
+        auto pn = argc >= 4 ? argv[3] : pt::store::current();
+        if (pn.empty()) pn = "default";
         pt::store::Profile p;
         pt::store::load(pn, p);
         std::cout << "profile:      " << pn
