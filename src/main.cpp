@@ -107,6 +107,23 @@ std::string sess_of(const std::string& body) {
 // What does the user mean by the (optional) <session> argument?
 // A name of an existing profile wins; otherwise it is a raw session id.
 // With no argument the CURRENT profile is used.
+// ---- tiny permanent caches (the THIN side may persist freely; the RAM-only
+// rule applies to the relay) ----
+std::string lite_dir() {
+    std::string d = getenv("HOME") ? getenv("HOME") : ".";
+    d += "/.config/progterm-lite";
+    mkdir(d.c_str(), 0700);
+    return d;
+}
+void write_cache(const std::string& name, const std::string& data) {
+    std::ofstream f(lite_dir() + "/" + name, std::ios::trunc);
+    if (f) f << data;
+}
+bool read_cache(const std::string& name, std::string& out) {
+    std::ifstream f(lite_dir() + "/" + name);
+    return static_cast<bool>(std::getline(f, out, '\0')) && !out.empty();
+}
+
 struct Target {
     std::string session, host, proxy, profile;
     bool from_profile = false;
@@ -445,12 +462,23 @@ void usage() {
     // catalog from the relay instead of storing a copy here.
     const pt::HttpResult r = pt::http_get_plain(
         host_from() + "/api/ttys/usage", bearer_from());
-    if (r.http_status == 200) { std::cout << r.body << std::flush; return; }
+    if (r.http_status == 200) {
+        write_cache("usage.cache", r.body);
+        std::cout << r.body << std::flush;
+        return;
+    }
+    std::string cached;
+    if (read_cache("usage.cache", cached)) {
+        std::cout << "[cached]\n" << cached << std::flush;
+        return;
+    }
     std::cout << "progterm-lite — special proxy to the full client\n";
-    if (r.http_status == 404)
-        std::cout << "\n[!] relay is TOO OLD: it has no /api/ttys/usage.\n"
-                     "    Update the full client (v0.5.4+) and restart"
-                     " 'serve --ttys'.\n";
+    if (r.http_status == 401)
+        std::cout << "\n[!] relay requires a token: export PROGTERM_TOKEN=<t>"
+                     " (serve --ttys --token <t>)\n";
+    else if (r.http_status == 404)
+        std::cout << "\n[!] relay is TOO OLD: it has no /api/ttys/usage."
+                     " Update the full client (v0.5.4+).\n";
     else
         std::cout << "\n[!] relay unreachable — start"
                      " 'progressive-cli serve --ttys'.\n";
@@ -501,12 +529,24 @@ int main(int argc, char** argv) {
             const std::string ses = need_session(argc, argv);
             if (ses.empty()) return 1;
             const std::string room = argc >= 4 ? argv[3] : "";
-            const pt::HttpResult fr = pt::http_post_plain(
-                host + "/api/ttys/render", render_body(ses, room), bearer);
-            if (fr.http_status == 0)
-                return outbox_record("api/ttys/render", render_body(ses, room)) ? 0 : 2;
-            std::cout << "\x1b[2J\x1b[H" << fr.body;
-            return 0;
+            const std::string rb = render_body(ses, room);
+            const pt::HttpResult fr =
+                pt::http_post_plain(host + "/api/ttys/render", rb, bearer);
+            if (fr.http_status == 200) {
+                write_cache("last_frame", fr.body);
+                std::cout << "\x1b[2J\x1b[H" << fr.body;
+                return 0;
+            }
+            if (fr.http_status == 0) {
+                std::string last;
+                if (read_cache("last_frame", last))
+                    std::cout << "\x1b[2J\x1b[H" << last
+                              << "\n[offline] showing last known screen\n";
+                else return outbox_record("api/ttys/render", rb) ? 0 : 2;
+                return 0;
+            }
+            std::cout << fr.body << "\n";
+            return 1;
         }
         if (arg1 == "term") {
             const std::string ses = need_session(argc, argv);
@@ -538,8 +578,15 @@ int main(int argc, char** argv) {
     }
     const pt::HttpResult fr = pt::http_post_plain(
         host + "/api/ttys/render", render_body(ses, ""), bearer);
-    if (fr.http_status == 200)
+    if (fr.http_status == 200) {
+        write_cache("last_frame", fr.body);
         std::cout << "\x1b[2J\x1b[H" << fr.body;
-    else std::cout << fr.body << "\n";
+    } else {
+        std::string last;
+        if (read_cache("last_frame", last))
+            std::cout << "\x1b[2J\x1b[H" << last
+                      << "\n[offline] showing last known screen\n";
+        else std::cout << fr.body << "\n";
+    }
     return 0;
 }
