@@ -402,37 +402,92 @@ int cmd_sync(const std::string& host, const std::string& bearer,
 // proxy <spec|off|status> [profile] — THIN-SIDE setting stored in the
 // container and re-asserted on every request. 'status' mirrors the full
 // client's own `proxy status` output byte-for-byte.
-int cmd_proxy(const std::string& host, const std::string& bearer,
-              int argc, char** argv) {
+// proxy status [profile]                    — показать текущее состояние
+// proxy off [profile]                       — отключить прокси в профиле
+// proxy on <name|N> [profile]               — включить пресет с релея
+// proxy <socks5|http>://host:port [profile] — явная спека
+int cmd_proxy(int argc, char** argv) {
+    auto host = host_from();
+    auto bearer = bearer_from();
     const std::string sub = argc >= 3 ? argv[2] : "";
-    std::string pname = argc >= 4 ? argv[3] : "";
 
+    // --- status ---
     if (sub == "status") {
-        if (pname.empty()) { pt::store::ensure_default(); pname = pt::store::current(); }
+        auto pn = argc >= 4 ? argv[3] : "";
         pt::store::Profile p;
-        pt::store::load(pname, p);
-        std::cout << "profile:      " << pname
+        pt::store::load(pn, p);
+        std::cout << "profile:      " << pn
                   << "\nproxy:        "
-                  << (p.proxy.empty() ? "(not set — direct)"
-                                      : p.proxy) << "\n";
+                  << (p.proxy.empty() ? "(direct)" : p.proxy) << "\n";
         const pt::HttpResult r =
-            pt::get(host_from() + "/api/ttys/proxy", bearer_from());
-        std::cout << "relay global: "
-                  << (r.status == 200 ? r.body : "(unreachable)") << "\n";
+            pt::get_plain(host + "/api/ttys/proxy", bearer);
+        if (r.status == 200) {
+            std::cout << r.body << std::flush;
+        } else {
+            std::cout << "relay global: (unreachable)\n";
+        }
         return 0;
     }
 
-    if (sub.empty()) {
-        std::cerr << "usage: progterm-lite proxy <spec|off|status> [profile]\n";
-        return 1;
-    }
+    // --- определить целевой профиль ---
+    std::string pname = argc >= 4 ? argv[3] : "";
     if (pname.empty()) { pt::store::ensure_default(); pname = pt::store::current(); }
     pt::store::Profile p;
     if (!pt::store::load(pname, p)) { p.name = pname; p.enabled = true; }
-    p.proxy = (sub == "off") ? "" : sub;
+
+    // --- off ---
+    if (sub == "off") {
+        p.proxy.clear();
+        pt::store::save(p);
+        std::cout << pname << ".proxy = (off)\n";
+        return 0;
+    }
+
+    // --- on <preset> [profile] ---
+    if (sub == "on") {
+        const std::string preset_name = argc >= 4 ? argv[3] : "";
+        const std::string prof = argc >= 5 ? argv[4] :
+            (pname != preset_name ? pname : pt::store::current());
+        pt::store::Profile p;
+        if (!pt::store::load(prof, p)) { p.name = prof; p.enabled = true; }
+
+        if (preset_name.empty()) {
+            std::cerr << "usage: proxy on <preset_name> [profile]\n"; return 1;
+        }
+        const std::string url = host + "/api/ttys/proxy/presets?name="
+                              + jesc(preset_name);
+        const auto br = bearer_from();
+        const pt::HttpResult pr = pt::get(url, br);
+        if (pr.status != 200) {
+            std::cerr << "preset '" << preset_name << "' not found\n";
+            return 1;
+        }
+        auto extract = [&](const char* k) -> std::string {
+            auto key = std::string("\"") + k + "\":";
+            auto pos = pr.body.find(key);
+            if (pos == std::string::npos) return "";
+            pos += key.size();
+            while (pos < pr.body.size() && pr.body[pos] == ' ') ++pos;
+            if (pr.body[pos] == '"') {
+                auto end = pr.body.find('"', ++pos);
+                return end == std::string::npos ? "" :
+                       pr.body.substr(pos, end - pos);
+            }
+            auto eol = pr.body.find_first_of(",}", pos);
+            return eol == std::string::npos ? "" :
+                   pr.body.substr(pos, eol - pos);
+        };
+        p.proxy = extract("type") + "://" + extract("host") + ":" +
+                  extract("port");
+        pt::store::save(p);
+        std::cout << prof << ".proxy = " << p.proxy << "\n";
+        return 0;
+    }
+
+    // --- explicit spec ---
+    p.proxy = sub;
     pt::store::save(p);
-    std::cout << pname << ".proxy = "
-              << (p.proxy.empty() ? "(off)" : p.proxy) << "\n";
+    std::cout << pname << ".proxy = " << p.proxy << "\n";
     return 0;
 }
 
@@ -614,7 +669,7 @@ static int run_main(int argc, char** argv) {
         if (argv[1] == std::string("session"))  return cmd_session(host, bearer, argc, argv);
         if (argv[1] == std::string("last"))     return cmd_last(host, bearer);
         if (argv[1] == std::string("sync"))     return cmd_sync(host, bearer, argc, argv);
-        if (argv[1] == std::string("proxy"))    return cmd_proxy(host, bearer, argc, argv);
+        if (argv[1] == std::string("proxy"))    return cmd_proxy(argc, argv);
         if (argv[1] == std::string("profile"))  return cmd_profile(argc, argv);
         if (argv[1] == std::string("logout"))   return cmd_logout(argc, argv);
         if (argv[1] == std::string("raw"))      return cmd_raw(host, bearer, argc, argv);
