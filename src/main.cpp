@@ -73,12 +73,14 @@ std::string with_proxy(std::string body, const std::string& px) {
 std::string layout_fix_line(const std::string& in) {
     const char* e = std::getenv("PROGTERM_LAYOUT");
     if (!e || std::string(e) != "ru") return in;
-    static const char* R[] = {"й","ц","у","к","е","н","г","ш","щ","з","х","ъ",
-                              "ф","ы","в","а","п","р","о","л","д","ж","э",
-                              "я","ч","с","м","и","т","ь","б","ю","ё"};
-    static const char* E[] = {"q","w","e","r","t","y","u","i","o","p","[","]",
-                              "a","s","d","f","g","h","j","k","l",";","'",
-                              "z","x","c","v","b","n","m",",",".","`"};
+    static const char* R[] =
+        {"й","ц","у","к","е","н","г","ш","щ","з","х","ъ",
+         "ф","ы","в","а","п","р","о","л","д","ж","э",
+         "я","ч","с","м","и","т","ь","б","ю","ё"};
+    static const char* E[] =
+        {"q","w","e","r","t","y","u","i","o","p","[","]",
+         "a","s","d","f","g","h","j","k","l",";","'",
+         "z","x","c","v","b","n","m",",",".","`"};
     std::string o;
     o.reserve(in.size());
     for (size_t i = 0; i < in.size();) {
@@ -96,12 +98,14 @@ std::string layout_fix_line(const std::string& in) {
 
 // Unconditional RU->US ЙЦУКЕН transliteration (used by the CLI recovery).
 std::string ru_to_us(const std::string& in) {
-    static const char* R[] = {"й","ц","у","к","е","н","г","ш","щ","з","х","ъ",
-                              "ф","ы","в","а","п","р","о","л","д","ж","э",
-                              "я","ч","с","м","и","т","ь","б","ю","ё"};
-    static const char* E[] = {"q","w","e","r","t","y","u","i","o","p","[","]",
-                              "a","s","d","f","g","h","j","k","l",";","'",
-                              "z","x","c","v","b","n","m",",",".","`"};
+    static const char* R[] =
+        {"й","ц","у","к","е","н","г","ш","щ","з","х","ъ",
+         "ф","ы","в","а","п","р","о","л","д","ж","э",
+         "я","ч","с","м","и","т","ь","б","ю","ё"};
+    static const char* E[] =
+        {"q","w","e","r","t","y","u","i","o","p","[","]",
+         "a","s","d","f","g","h","j","k","l",";","'",
+         "z","x","c","v","b","n","m",",",".","`"};
     std::string o;
     o.reserve(in.size());
     for (size_t i = 0; i < in.size();) {
@@ -123,8 +127,6 @@ bool contains_cyrillic(const char* s) {
     return false;
 }
 
-// ---- tiny permanent caches (the THIN side may persist freely; the RAM-only
-// rule applies to the relay) ----
 std::string lite_dir() {
     std::string d = getenv("HOME") ? getenv("HOME") : ".";
     d += "/.config/progterm-lite";
@@ -140,7 +142,6 @@ bool read_cache(const std::string& name, std::string& out) {
     return static_cast<bool>(std::getline(f, out, '\0')) && !out.empty();
 }
 
-// ---- offline outbox ----
 std::string outbox_path() {
     // ON by default. PROGTERM_OUTBOX=<file> redirects; empty value disables.
     const char* e = std::getenv("PROGTERM_OUTBOX");
@@ -175,7 +176,6 @@ bool outbox_record(const std::string& path, const std::string& body) {
     return true;
 }
 
-// ---- terminal size ----
 void term_size(int& cols, int& rows) {
     cols = 80; rows = 24;
 #ifdef TIOCGWINSZ
@@ -202,7 +202,6 @@ std::string render_body(const std::string& session, const std::string& room) {
     return b + ",\"view\":\"static\"}";
 }
 
-// ---- profiles ----
 struct Target {
     std::string session, host, proxy, profile;
 };
@@ -219,16 +218,16 @@ Target resolve_target(int argc, char** argv) {
     return t;
 }
 
-// Proxy of the ACTIVE profile (an explicit <profile> argument wins).
-std::string active_proxy(int argc, char** argv) {
-    if (argc >= 3) {
-        pt::store::Profile p;
-        if (pt::store::load_profile(argv[2], p)) return p.proxy;
-    }
+struct SessPx { std::string ses, px; bool from_profile=false; };
+SessPx sess_px(int argc, char** argv) {
+    const Target t = resolve_target(argc, argv);
+    if (!t.session.empty()) return {t.session, t.proxy, true};
     pt::store::Profile p;
-    if (pt::store::load_profile("", p)) return p.proxy;
-    return "";
+    if (pt::store::load_profile("", p) && !p.session.empty())
+        return {p.session, t.proxy, true};
+    return {};
 }
+
 
 // Pull "session":"…" out of a relay response without a JSON parser.
 std::string sess_of(const std::string& body) {
@@ -241,17 +240,13 @@ std::string sess_of(const std::string& body) {
 }
 
 void usage() {
+    const pt::HttpResult r = pt::http_get_plain(
+        host_from() + "/api/ttys/usage", bearer_from());
+    if (r.http_status == 200) { std::cout << r.body << std::flush; return; }
     std::cout << "progterm-lite — special proxy to the full client\n\n"
-              << "verbs: register <hs> <user> <pass> [profile] | last |\n"
-              << "  sync|render|term|logout [session|profile] [room] |\n"
-              << "  proxy [<spec>|off|status] [profile] |\n"
-              << "  profile create|set|list|enable|disable|current|delete|\n"
-              << "          export|import <file> | raw <path> [body]\n"
-              << "anything else = a LINE for the full client's REPL:\n"
-              << "  progterm-lite hello\n"
-              << "  progterm-lite /open #general\n"
-              << "\nenv: PROGTERM_HOST PROGTERM_TOKEN PROGTERM_LAYOUT"
-                 " PROGTERM_OUTBOX\n";
+                 "verbs: register|session <hs> <u> <p|token> <dev?> [profile]\n"
+                 "  last | sync|render|term [ses|profile] [room] | logout\n"
+                 "  proxy [<spec>|off|status] | profile <action>… | raw …\n";
 }
 
 // ---- interactive remote-terminal loop ----
@@ -259,14 +254,7 @@ int term_loop(const std::string& host, const std::string& bearer,
               const std::string& session, const std::string& room,
               const std::string& proxy) {
     const std::string in_url = host + "/api/ttys/input";
-    const std::string rd_url = host + "/api/ttys/render";
-    auto frame_body = [&] {
-        return with_proxy(render_body(session, room), proxy);
-    };
-
-    const pt::HttpResult first = pt::http_post_plain(rd_url, frame_body(), bearer);
-    if (first.http_status == 200)
-        std::cout << "\x1b[2J\x1b[H" << first.body << std::flush;
+    fetch_frame(host, bearer, session, room, proxy);   // first paint
 
     std::cout << "> " << std::flush;
     std::string line;
@@ -283,24 +271,55 @@ int term_loop(const std::string& host, const std::string& bearer,
         if (ir.http_status == 0)
             outbox_record("api/ttys/input", ibody);
 
-        const pt::HttpResult fr =
-            pt::http_post_plain(rd_url, frame_body(), bearer);
-        if (fr.http_status == 200) {
-            write_cache("last_frame", fr.body);
-            std::cout << "\x1b[2J\x1b[H" << fr.body;
-        } else {
-            std::string last;
-            if (read_cache("last_frame", last))
-                std::cout << "[offline] " << last << "\n";
-            else
-                std::cerr << "[" << fr.http_status << "] " << fr.body << "\n";
-        }
+        fetch_frame(rd_url, bearer, session, room, proxy);
         std::cout << "> " << std::flush;
     }
     return 0;
 }
 
+// One shared screen refresh: POST render (with proxy), cache on success,
+// fall back to the last known frame when offline. Returns true if a live
+// or cached frame was printed.
+bool fetch_frame(const std::string& host, const std::string& bearer,
+                 const std::string& ses, const std::string& room,
+                 const std::string& px) {
+    const std::string rb = with_proxy(render_body(ses, room), px);
+    const pt::HttpResult fr =
+        pt::http_post_plain(host + "/api/ttys/render", rb, bearer);
+    if (fr.http_status == 200) {
+        write_cache("last_frame", fr.body);
+        std::cout << "\x1b[2J\x1b[H" << fr.body;
+        return true;
+    }
+    std::string last;
+    if (fr.http_status == 0 && read_cache("last_frame", last)) {
+        std::cout << "\x1b[2J\x1b[H" << last
+                  << "\n[offline] showing last known screen\n";
+        return true;
+    }
+    if (fr.http_status != 0) std::cout << fr.body << "\n";
+    return false;
+}
+
 // ---- commands ----
+// Persist the returned session id into the profile and activate it
+// (shared tail of register/session).
+void remember(const std::string& host, const std::string& sid,
+              pt::store::Profile p) {
+    p.session = sid; p.host = host;
+    pt::store::save_profile(p);
+    pt::store::set_current(p.name);
+}
+
+// Current-or-named profile, created enabled when missing.
+pt::store::Profile target_profile(int argc, char** argv, int idx) {
+    std::string pname = argc > idx ? argv[idx] : "";
+    if (pname.empty()) { pt::store::ensure_default_profile(); pname = pt::store::current_name(); }
+    pt::store::Profile p;
+    if (!pt::store::load_profile(pname, p)) { p.name = pname; p.enabled = true; }
+    return p;
+}
+
 int cmd_register(const std::string& host, const std::string& bearer,
                  int argc, char** argv) {
     if (argc < 5) {
@@ -308,11 +327,7 @@ int cmd_register(const std::string& host, const std::string& bearer,
                      " <password> [profile]\n";
         return 1;
     }
-    std::string pname = argc >= 6 ? argv[5] : "";
-    if (pname.empty()) { pt::store::ensure_default_profile(); pname = pt::store::current_name(); }
-    pt::store::Profile p;
-    if (!pt::store::load_profile(pname, p)) { p.name = pname; p.enabled = true; }
-    p.enabled = true;
+    pt::store::Profile p = target_profile(argc, argv, 5);
 
     const std::string body = with_proxy(
         "{\"homeserver\":\"" + jesc(argv[2]) +
@@ -325,9 +340,35 @@ int cmd_register(const std::string& host, const std::string& bearer,
     if (r.http_status != 200) { std::cout << r.body << "\n"; return 1; }
     const std::string sid = sess_of(r.body);
     if (sid.empty()) { std::cerr << "no session in response\n"; return 1; }
-    p.session = sid; p.host = host;
-    pt::store::save_profile(p);
-    pt::store::set_current(p.name);
+    remember(host, sid, p);
+    std::cout << sid << "\n";
+    return 0;
+}
+
+// session <hs> <user> <token> <device> [profile] — attach an EXISTING
+// account (no registration). The returned session id is remembered.
+int cmd_session(const std::string& host, const std::string& bearer,
+                int argc, char** argv) {
+    if (argc < 6) {
+        std::cerr << "usage: progterm-lite session <homeserver> <user>"
+                     " <token> <device> [profile]\n";
+        return 1;
+    }
+    pt::store::Profile p = target_profile(argc, argv, 6);
+    p.enabled = true;
+
+    const std::string b2 = "{\"account\":{\"homeserver\":\"" + jesc(argv[2]) +
+        "\",\"user_id\":\""     + jesc(argv[3]) +
+        "\",\"access_token\":\"" + jesc(argv[4]) +
+        "\",\"device_id\":\""   + jesc(argv[5]) +
+        "\",\"proxy\":\""       + jesc(p.proxy) + "\"}}";
+
+    const pt::HttpResult r =
+        pt::http_post_json(host + "/api/ttys/session", b2, bearer);
+    if (r.http_status != 200) { std::cout << r.body << "\n"; return 1; }
+    const std::string sid = sess_of(r.body);
+    if (sid.empty()) { std::cerr << "no session in response\n"; return 1; }
+    remember(host, sid, p);
     std::cout << sid << "\n";
     return 0;
 }
@@ -348,23 +389,11 @@ int cmd_last(const std::string& host, const std::string& bearer) {
     return 0;
 }
 
-// Session for slot-verbs (sync/render/term): explicit <session|profile>
-// argument wins, else the active profile's stored session.
-std::string need_session(int argc, char** argv) {
-    const Target t = resolve_target(argc, argv);
-    if (!t.session.empty()) return t.session;
-    pt::store::Profile p;
-    if (pt::store::load_profile("", p) && !p.session.empty()) return p.session;
-    std::cerr << "no session — register first:\n"
-                 "  progterm-lite register <homeserver> <user> <pass> [profile]\n";
-    return "";
-}
-
 int cmd_sync(const std::string& host, const std::string& bearer,
              int argc, char** argv) {
-    const std::string ses = need_session(argc, argv);
+    const std::string ses = sess_px(argc, argv).ses;
     if (ses.empty()) return 1;
-    const std::string px = active_proxy(argc, argv);
+    const std::string px = sess_px(argc, argv).px;
     const std::string body = with_proxy(
         "{\"session\":\"" + jesc(ses) + "\"}", px);
     const pt::HttpResult r = pt::http_post_plain(
@@ -470,11 +499,9 @@ int cmd_profile(int argc, char** argv) {
             std::ofstream f(file, std::ios::trunc);
             f << "current " << pt::store::current_name() << "\n";
             for (const auto& p : ps)
-                f << "profile " << p.name << "\n"
-                  << "enabled " << (p.enabled ? "true" : "false") << "\n"
-                  << "proxy "   << p.proxy  << "\n"
-                  << "host "    << p.host   << "\n"
-                  << "session " << p.session << "\n";
+                f << "profile " << p.name << "\nenabled "
+                  << (p.enabled ? "true" : "false") << "\nproxy " << p.proxy
+                  << "\nhost " << p.host << "\nsession " << p.session << "\n";
             f.close();
 #ifdef __unix__
             chmod(file.c_str(), 0600);
@@ -582,6 +609,7 @@ static int run_main(int argc, char** argv) {
     if (!slashed) {
         if (argv[1] == std::string("help"))     { usage(); return 0; }
         if (argv[1] == std::string("register")) return cmd_register(host, bearer, argc, argv);
+        if (argv[1] == std::string("session"))  return cmd_session(host, bearer, argc, argv);
         if (argv[1] == std::string("last"))     return cmd_last(host, bearer);
         if (argv[1] == std::string("sync"))     return cmd_sync(host, bearer, argc, argv);
         if (argv[1] == std::string("proxy"))    return cmd_proxy(host, bearer, argc, argv);
@@ -589,35 +617,21 @@ static int run_main(int argc, char** argv) {
         if (argv[1] == std::string("logout"))   return cmd_logout(argc, argv);
         if (argv[1] == std::string("raw"))      return cmd_raw(host, bearer, argc, argv);
         if (argv[1] == std::string("render")) {
-            const std::string ses = need_session(argc, argv);
+            const std::string ses = sess_px(argc, argv).ses;
             if (ses.empty()) return 1;
-            const std::string rb = with_proxy(render_body(ses, argc >= 4 ? argv[3] : ""),
-                                              active_proxy(argc, argv));
-            const pt::HttpResult fr =
-                pt::http_post_plain(host + "/api/ttys/render", rb, bearer);
-            if (fr.http_status == 200) {
-                write_cache("last_frame", fr.body);
-                std::cout << "\x1b[2J\x1b[H" << fr.body;
-                return 0;
-            }
-            if (fr.http_status == 0) {
-                std::string last;
-                if (read_cache("last_frame", last)) {
-                    std::cout << "\x1b[2J\x1b[H" << last
-                              << "\n[offline] showing last known screen\n";
-                    return 0;
-                }
-                return outbox_record("api/ttys/render", rb) ? 0 : 2;
-            }
-            std::cout << fr.body << "\n";
-            return 1;
+            if (!fetch_frame(host, bearer, ses,
+                             argc >= 4 ? argv[3] : "",
+                             sess_px(argc, argv).px))
+                outbox_record("api/ttys/render",
+                              render_body(ses, argc >= 4 ? argv[3] : ""));
+            return 0;
         }
         if (argv[1] == std::string("term")) {
-            const std::string ses = need_session(argc, argv);
+            const std::string ses = sess_px(argc, argv).ses;
             if (ses.empty()) return 1;
             return term_loop(host, bearer, ses,
                              argc >= 4 ? argv[3] : "",
-                             active_proxy(argc, argv));
+                             sess_px(argc, argv).px);
         }
     }
 
@@ -647,26 +661,14 @@ static int run_main(int argc, char** argv) {
     const std::string ibody = with_proxy(
         "{\"session\":\"" + jesc(ses) +
         "\",\"input\":\"" + jesc(line) + "\"}",
-        active_proxy(argc, argv));
+        sess_px(argc, argv).px);
 
     const pt::HttpResult ir =
         pt::http_post_json(host + "/api/ttys/input", ibody, bearer);
     if (ir.http_status == 0 && outbox_record("api/ttys/input", ibody))
         return 0;
 
-    const pt::HttpResult fr = pt::http_post_plain(
-        host + "/api/ttys/render", render_body(ses, ""), bearer);
-    if (fr.http_status == 200) {
-        write_cache("last_frame", fr.body);
-        std::cout << "\x1b[2J\x1b[H" << fr.body;
-    } else {
-        std::string last;
-        if (read_cache("last_frame", last))
-            std::cout << "\x1b[2J\x1b[H" << last
-                      << "\n[offline] showing last known screen\n";
-        else
-            std::cout << fr.body << "\n";
-    }
+    fetch_frame(host, bearer, ses, "", sess_px(argc, argv).px);
     return ir.http_status >= 200 && ir.http_status < 300 ? 0 : 1;
 }
 

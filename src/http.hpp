@@ -11,9 +11,7 @@ struct HttpResult {
     bool ok() const { return code == CURLE_OK && http_status >= 200 && http_status < 300; }
 };
 
-// POST `body` (JSON) to `url` with Content-Type: application/json.
-// When `bearer` is non-empty an "Authorization: Bearer <bearer>" header is
-// sent (relay token auth). Returns the HTTP status and response body.
+// POST JSON (adds Content-Type and optional "Authorization: Bearer").
 HttpResult http_post_json(const std::string& url, const std::string& body,
                           const std::string& bearer = "");
 
