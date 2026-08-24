@@ -227,7 +227,6 @@ SessPx sess_px(int argc, char** argv) {
     return {};
 }
 
-
 // Pull "session":"…" out of a relay response without a JSON parser.
 std::string sess_of(const std::string& body) {
     const std::string k = "\"session\":\"";
@@ -247,7 +246,6 @@ void usage() {
                  "  last | sync|render|term [ses|profile] [room] | logout\n"
                  "  proxy [<spec>|off|status] | profile <action>… | raw …\n";
 }
-
 
 // One shared screen refresh: POST render (with proxy), cache on success,
 // fall back to the last known frame when offline. Returns true if a live
@@ -367,7 +365,6 @@ int cmd_session(const std::string& host, const std::string& bearer,
     std::cout << sid << "\n";
     return 0;
 }
-
 int cmd_last(const std::string& host, const std::string& bearer) {
     const pt::HttpResult r =
         pt::get(host + "/api/ttys/session/last", bearer);
